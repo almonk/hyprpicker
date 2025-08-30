@@ -103,6 +103,9 @@ void CHyprpicker::init() {
         m_bNoFractional = true;
     }
 
+    // Initialize cursor theme for overlay crosshair drawing (if possible)
+    initCursorTheme();
+
     for (auto& m : m_vMonitors) {
         m_vLayerSurfaces.emplace_back(std::make_unique<CLayerSurface>(m.get()));
 
@@ -123,6 +126,34 @@ void CHyprpicker::init() {
         wl_display_disconnect(m_pWLDisplay);
         m_pWLDisplay = nullptr;
     }
+}
+
+void CHyprpicker::initCursorTheme() {
+    if (!m_pSHM)
+        return;
+
+    const char* sizeEnv  = getenv("XCURSOR_SIZE");
+    if (sizeEnv) {
+        int parsed = atoi(sizeEnv);
+        if (parsed > 0)
+            m_iCursorThemeSize = parsed;
+    }
+    const char* themeEnv = getenv("XCURSOR_THEME");
+
+    m_pCursorTheme = wl_cursor_theme_load(themeEnv, m_iCursorThemeSize, (wl_shm*)m_pSHM->resource());
+    if (!m_pCursorTheme) {
+        Debug::log(WARN, "Failed to load cursor theme for overlay reticle");
+        return;
+    }
+
+    m_pThemeCrosshair = wl_cursor_theme_get_cursor(m_pCursorTheme, "crosshair");
+    if (!m_pThemeCrosshair || m_pThemeCrosshair->image_count < 1) {
+        Debug::log(WARN, "Cursor theme does not provide a crosshair cursor");
+        return;
+    }
+
+    // Pick the first image by default
+    m_pThemeCrosshairImage = m_pThemeCrosshair->images[0];
 }
 
 void CHyprpicker::finish(int code) {
@@ -421,7 +452,10 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             cairo_scale(PCAIRO, 1, 1);
 
             // Keep the zoom circle centered at the (possibly nudged) UI center
-            cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, 105 / SCALEBUFS.x, 0, 2 * M_PI);
+            const double cellWForRadius = 10.0 / SCALEBUFS.x;
+            const double zoomRadiusUI   = m_zoomRadiusSrcPx * cellWForRadius;
+            const double outerRadiusUI  = zoomRadiusUI + 5.0 / SCALEBUFS.x; // thin border ring
+            cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, outerRadiusUI, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
 
             cairo_fill(PCAIRO);
@@ -442,9 +476,51 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             cairo_pattern_set_matrix(PATTERN, &matrix);
             cairo_set_source(PCAIRO, PATTERN);
             // Keep the zoom circle centered at the (possibly nudged) UI center
-            cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, 100 / SCALEBUFS.x, 0, 2 * M_PI);
+            const double zoomRadius = zoomRadiusUI;
+            cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, zoomRadius, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
             cairo_paint(PCAIRO);
+
+            // Draw a faint pixel grid overlay aligned to the source pixels
+            // One source pixel maps to 10x in the zoom (scale 0.1 above)
+            {
+                const double cellW = 10.0 / SCALEBUFS.x;
+                const double cellH = 10.0 / SCALEBUFS.y;
+
+                // Vertical grid lines at pixel boundaries (x = k + 0.5 in source space)
+                const double minVXSrc = centerBuf.x - (zoomRadius / cellW);
+                const double maxVXSrc = centerBuf.x + (zoomRadius / cellW);
+                const long   vStart   = (long)std::floor(minVXSrc - 0.5);
+                const long   vEnd     = (long)std::ceil(maxVXSrc - 0.5);
+
+                // Horizontal grid lines at pixel boundaries (y = k + 0.5 in source space)
+                const double minVYSrc = centerBuf.y - (zoomRadius / cellH);
+                const double maxVYSrc = centerBuf.y + (zoomRadius / cellH);
+                const long   hStart   = (long)std::floor(minVYSrc - 0.5);
+                const long   hEnd     = (long)std::ceil(maxVYSrc - 0.5);
+
+                // Very faint lines; hairline width in UI pixels
+                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 0.12);
+                cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
+
+                // Vertical lines
+                for (long j = vStart; j <= vEnd; ++j) {
+                    const double srcX  = (double)j + 0.5; // boundary
+                    const double drawX = uiCenter.x + (srcX - centerBuf.x) * cellW;
+                    cairo_move_to(PCAIRO, drawX, uiCenter.y - zoomRadius);
+                    cairo_line_to(PCAIRO, drawX, uiCenter.y + zoomRadius);
+                }
+
+                // Horizontal lines
+                for (long i = hStart; i <= hEnd; ++i) {
+                    const double srcY  = (double)i + 0.5; // boundary
+                    const double drawY = uiCenter.y + (srcY - centerBuf.y) * cellH;
+                    cairo_move_to(PCAIRO, uiCenter.x - zoomRadius, drawY);
+                    cairo_line_to(PCAIRO, uiCenter.x + zoomRadius, drawY);
+                }
+
+                cairo_stroke(PCAIRO);
+            }
 
             if (!m_bDisablePreview) {
                 const auto  currentColor = getColorFromPixel(pSurface, centerBuf);
@@ -537,23 +613,26 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 Vector2D    uiCenter2     = CLICKPOS + (m_vNudgeBufPx * SCALEBUFS_INV2);
                 uiCenter2.x               = std::clamp(uiCenter2.x, 0.0, PBUFFER->pixelSize.x - 1.0);
                 uiCenter2.y               = std::clamp(uiCenter2.y, 0.0, PBUFFER->pixelSize.y - 1.0);
-                const double halfLen = 8.0 / SCALEBUFS.x;
-                // Outline for contrast (black)
-                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
-                cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
-                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-                cairo_stroke(PCAIRO);
-                // Inner lines (white)
-                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
-                cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
-                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-                cairo_stroke(PCAIRO);
+
+                {
+                    const double halfLen = 8.0 / SCALEBUFS.x;
+                    // Outline for contrast (black)
+                    cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
+                    cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
+                    cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+                    cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+                    cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+                    cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+                    cairo_stroke(PCAIRO);
+                    // Inner lines (white)
+                    cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+                    cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
+                    cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+                    cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+                    cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+                    cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+                    cairo_stroke(PCAIRO);
+                }
             }
         }
     } else if (!m_bRenderInactive && m_bCoordsInitialized) {
@@ -583,23 +662,25 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             Vector2D    uiCenter2      = CLICKPOS2 + (m_vNudgeBufPx * SCALEBUFS_INV);
             uiCenter2.x                = std::clamp(uiCenter2.x, 0.0, PBUFFER->pixelSize.x - 1.0);
             uiCenter2.y                = std::clamp(uiCenter2.y, 0.0, PBUFFER->pixelSize.y - 1.0);
-            const double halfLen = 8.0 / SCALEBUFS.x;
-            // Outline for contrast (black)
-            cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
-            cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
-            cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-            cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-            cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-            cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-            cairo_stroke(PCAIRO);
-            // Inner lines (white)
-            cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
-            cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
-            cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-            cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-            cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-            cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-            cairo_stroke(PCAIRO);
+            {
+                const double halfLen = 8.0 / SCALEBUFS.x;
+                // Outline for contrast (black)
+                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
+                cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
+                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+                cairo_stroke(PCAIRO);
+                // Inner lines (white)
+                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+                cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
+                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+                cairo_stroke(PCAIRO);
+            }
         }
     }
 
@@ -788,6 +869,53 @@ void CHyprpicker::initMouse() {
         if (m_pCursorShapeDevice)
             m_pCursorShapeDevice->sendSetShape(serial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
 
+        markDirty();
+    });
+    // Adjust zoom radius with scroll
+    m_pPointer->setAxisDiscrete([this](CCWlPointer* r, enum wl_pointer_axis axis, int32_t discrete) {
+        if (m_bNoZoom || !m_bCoordsInitialized)
+            return;
+        if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL)
+            return;
+        int steps = discrete; // wlroots: up is negative, down is positive
+        if (steps == 0)
+            return;
+        // Shift for larger steps
+        const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
+        const double stepSize = withShift ? 2.0 : 1.0;
+        m_zoomRadiusSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
+        m_zoomRadiusSrcPx = std::clamp(m_zoomRadiusSrcPx, 4.0, 60.0);
+        markDirty();
+    });
+    m_pPointer->setAxisValue120([this](CCWlPointer* r, enum wl_pointer_axis axis, int32_t value120) {
+        if (m_bNoZoom || !m_bCoordsInitialized)
+            return;
+        if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL)
+            return;
+        if (value120 == 0)
+            return;
+        int steps = value120 / 120; // multiples of 120 per notch
+        if (steps == 0)
+            steps = (value120 > 0 ? 1 : -1);
+        const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
+        const double stepSize = withShift ? 2.0 : 1.0;
+        m_zoomRadiusSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
+        m_zoomRadiusSrcPx = std::clamp(m_zoomRadiusSrcPx, 4.0, 60.0);
+        markDirty();
+    });
+    // Fallback for smooth axis if discrete not provided
+    m_pPointer->setAxis([this](CCWlPointer* r, uint32_t timeMs, enum wl_pointer_axis axis, wl_fixed_t value) {
+        if (m_bNoZoom || !m_bCoordsInitialized)
+            return;
+        if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL)
+            return;
+        const double v = wl_fixed_to_double(value);
+        if (std::abs(v) < 0.01)
+            return;
+        const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
+        const double stepSize = withShift ? 0.5 : 0.25; // gentle increments for smooth scroll
+        m_zoomRadiusSrcPx += (v < 0 ? +stepSize : -stepSize);
+        m_zoomRadiusSrcPx = std::clamp(m_zoomRadiusSrcPx, 4.0, 60.0);
         markDirty();
     });
     m_pPointer->setLeave([this](CCWlPointer* r, uint32_t timeMs, wl_proxy* surface) {

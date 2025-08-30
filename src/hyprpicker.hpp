@@ -16,6 +16,7 @@ enum eOutputMode {
 class CHyprpicker {
   public:
     void                                        init();
+    void                                        initCursorTheme();
 
     std::mutex                                  m_mtTickMutex;
 
@@ -66,6 +67,12 @@ class CHyprpicker {
     bool                                        m_bCursorHidden = false;
     uint32_t                                    m_lastPointerSerial = 0;
 
+    // Wayland cursor theme and crosshair image (for drawing while nudging)
+    wl_cursor_theme*                            m_pCursorTheme = nullptr;
+    wl_cursor*                                  m_pThemeCrosshair = nullptr;
+    wl_cursor_image*                            m_pThemeCrosshairImage = nullptr;
+    int                                         m_iCursorThemeSize = 24;
+
     // Keyboard repeat handling
     std::atomic<bool>                           m_keyLeft{false}, m_keyRight{false}, m_keyUp{false}, m_keyDown{false};
     std::atomic<int>                            m_repeatRate{0};   // chars/sec (0 or negative disables)
@@ -73,6 +80,9 @@ class CHyprpicker {
     std::atomic<bool>                           m_repeatThreadRunning{false};
     std::thread                                  m_repeatThread;
     void                                        startRepeatThread();
+
+    // Zoom UI radius in source pixels (before 10x scaling)
+    double                                      m_zoomRadiusSrcPx = 10.0; // default inner radius corresponds to 100 UI px at 10x
 
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 
