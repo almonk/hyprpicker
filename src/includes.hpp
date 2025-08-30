@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <thread>
 #include <unordered_map>
+#include <chrono>
 
 #include <hyprutils/memory/WeakPtr.hpp>
 #include <hyprutils/os/Process.hpp>

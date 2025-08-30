@@ -451,9 +451,38 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
 
             cairo_scale(PCAIRO, 1, 1);
 
+            // Update spring animation for zoom radius
+            {
+                using namespace std::chrono;
+                const auto now = steady_clock::now();
+                if (!m_zoomAnimInitialized) {
+                    m_zoomAnimInitialized = true;
+                    m_zoomLastTick        = now;
+                    m_zoomRadiusCurrentSrcPx = m_zoomRadiusTargetSrcPx;
+                    m_zoomRadiusVel          = 0.0;
+                }
+                const double dt = duration<double>(now - m_zoomLastTick).count();
+                m_zoomLastTick  = now;
+                if (dt > 0.0) {
+                    // Snappier critically-damped spring
+                    const double k = 600.0; // stiffness (higher = snappier)
+                    const double zeta = 1.0; // damping ratio (critical)
+                    const double c = 2.0 * std::sqrt(k) * zeta;
+                    const double x = m_zoomRadiusCurrentSrcPx - m_zoomRadiusTargetSrcPx;
+                    const double a = (-k * x) - (c * m_zoomRadiusVel);
+                    m_zoomRadiusVel += a * dt;
+                    m_zoomRadiusCurrentSrcPx += m_zoomRadiusVel * dt;
+                    // Snap when very close to avoid jitter
+                    if (std::abs(m_zoomRadiusCurrentSrcPx - m_zoomRadiusTargetSrcPx) < 0.01 && std::abs(m_zoomRadiusVel) < 0.01) {
+                        m_zoomRadiusCurrentSrcPx = m_zoomRadiusTargetSrcPx;
+                        m_zoomRadiusVel          = 0.0;
+                    }
+                }
+            }
+
             // Keep the zoom circle centered at the (possibly nudged) UI center
             const double cellWForRadius = 10.0 / SCALEBUFS.x;
-            const double zoomRadiusUI   = m_zoomRadiusSrcPx * cellWForRadius;
+            const double zoomRadiusUI   = m_zoomRadiusCurrentSrcPx * cellWForRadius;
             const double outerRadiusUI  = zoomRadiusUI + 5.0 / SCALEBUFS.x; // thin border ring
             cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, outerRadiusUI, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
@@ -883,8 +912,8 @@ void CHyprpicker::initMouse() {
         // Shift for larger steps
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const double stepSize = withShift ? 2.0 : 1.0;
-        m_zoomRadiusSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
-        m_zoomRadiusSrcPx = std::clamp(m_zoomRadiusSrcPx, 4.0, 60.0);
+        m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
+        m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
         markDirty();
     });
     m_pPointer->setAxisValue120([this](CCWlPointer* r, enum wl_pointer_axis axis, int32_t value120) {
@@ -899,8 +928,8 @@ void CHyprpicker::initMouse() {
             steps = (value120 > 0 ? 1 : -1);
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const double stepSize = withShift ? 2.0 : 1.0;
-        m_zoomRadiusSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
-        m_zoomRadiusSrcPx = std::clamp(m_zoomRadiusSrcPx, 4.0, 60.0);
+        m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
+        m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
         markDirty();
     });
     // Fallback for smooth axis if discrete not provided
@@ -914,8 +943,8 @@ void CHyprpicker::initMouse() {
             return;
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const double stepSize = withShift ? 0.5 : 0.25; // gentle increments for smooth scroll
-        m_zoomRadiusSrcPx += (v < 0 ? +stepSize : -stepSize);
-        m_zoomRadiusSrcPx = std::clamp(m_zoomRadiusSrcPx, 4.0, 60.0);
+        m_zoomRadiusTargetSrcPx += (v < 0 ? +stepSize : -stepSize);
+        m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
         markDirty();
     });
     m_pPointer->setLeave([this](CCWlPointer* r, uint32_t timeMs, wl_proxy* surface) {

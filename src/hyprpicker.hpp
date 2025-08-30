@@ -81,8 +81,12 @@ class CHyprpicker {
     std::thread                                  m_repeatThread;
     void                                        startRepeatThread();
 
-    // Zoom UI radius in source pixels (before 10x scaling)
-    double                                      m_zoomRadiusSrcPx = 10.0; // default inner radius corresponds to 100 UI px at 10x
+    // Zoom UI radius spring animation (source pixels before 10x scaling)
+    double                                      m_zoomRadiusTargetSrcPx = 10.0;
+    double                                      m_zoomRadiusCurrentSrcPx = 10.0;
+    double                                      m_zoomRadiusVel = 0.0; // src px / s
+    std::chrono::steady_clock::time_point       m_zoomLastTick{};
+    bool                                        m_zoomAnimInitialized = false;
 
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 
