@@ -408,13 +408,20 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             centerBuf.x           = std::clamp(centerBuf.x, 0.0, pSurface->screenBuffer->pixelSize.x - 1.0);
             centerBuf.y           = std::clamp(centerBuf.y, 0.0, pSurface->screenBuffer->pixelSize.y - 1.0);
 
+            // UI center should move with the nudge as well. Convert the nudge (screenBuffer pixels)
+            // into this surface's buffer coordinates and offset the on-screen UI accordingly.
+            const auto SCALEBUFS_INV = Vector2D{1.0 / SCALEBUFS.x, 1.0 / SCALEBUFS.y};
+            Vector2D    uiCenter     = CLICKPOS + (m_vNudgeBufPx * SCALEBUFS_INV);
+            uiCenter.x               = std::clamp(uiCenter.x, 0.0, PBUFFER->pixelSize.x - 1.0);
+            uiCenter.y               = std::clamp(uiCenter.y, 0.0, PBUFFER->pixelSize.y - 1.0);
+
             const auto PIXCOLOR = getColorFromPixel(pSurface, centerBuf);
             cairo_set_source_rgba(PCAIRO, PIXCOLOR.r / 255.f, PIXCOLOR.g / 255.f, PIXCOLOR.b / 255.f, PIXCOLOR.a / 255.f);
 
             cairo_scale(PCAIRO, 1, 1);
 
-            // Keep the zoom circle centered at the cursor position
-            cairo_arc(PCAIRO, CLICKPOS.x, CLICKPOS.y, 105 / SCALEBUFS.x, 0, 2 * M_PI);
+            // Keep the zoom circle centered at the (possibly nudged) UI center
+            cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, 105 / SCALEBUFS.x, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
 
             cairo_fill(PCAIRO);
@@ -434,8 +441,8 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             cairo_matrix_translate(&matrix, (-centerBuf.x / SCALEBUFS.x) - 0.5f, (-centerBuf.y / SCALEBUFS.y) - 0.5f);
             cairo_pattern_set_matrix(PATTERN, &matrix);
             cairo_set_source(PCAIRO, PATTERN);
-            // Keep the zoom circle centered at the cursor position
-            cairo_arc(PCAIRO, CLICKPOS.x, CLICKPOS.y, 100 / SCALEBUFS.x, 0, 2 * M_PI);
+            // Keep the zoom circle centered at the (possibly nudged) UI center
+            cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, 100 / SCALEBUFS.x, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
             cairo_paint(PCAIRO);
 
@@ -477,18 +484,18 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
 
                 double x, y, width = 8 + (11 * previewBuffer.length()), height = 28, radius = 6;
 
-                if (CLICKPOS.y > (PBUFFER->pixelSize.y - 50) && CLICKPOS.x > (PBUFFER->pixelSize.x - 100)) {
-                    x = CLICKPOS.x - 80;
-                    y = CLICKPOS.y - 40;
-                } else if (CLICKPOS.y > (PBUFFER->pixelSize.y - 50)) {
-                    x = CLICKPOS.x;
-                    y = CLICKPOS.y - 40;
-                } else if (CLICKPOS.x > (PBUFFER->pixelSize.x - 100)) {
-                    x = CLICKPOS.x - 80;
-                    y = CLICKPOS.y + 20;
+                if (uiCenter.y > (PBUFFER->pixelSize.y - 50) && uiCenter.x > (PBUFFER->pixelSize.x - 100)) {
+                    x = uiCenter.x - 80;
+                    y = uiCenter.y - 40;
+                } else if (uiCenter.y > (PBUFFER->pixelSize.y - 50)) {
+                    x = uiCenter.x;
+                    y = uiCenter.y - 40;
+                } else if (uiCenter.x > (PBUFFER->pixelSize.x - 100)) {
+                    x = uiCenter.x - 80;
+                    y = uiCenter.y + 20;
                 } else {
-                    x = CLICKPOS.x;
-                    y = CLICKPOS.y + 20;
+                    x = uiCenter.x;
+                    y = uiCenter.y + 20;
                 }
                 x -= 5.5 * previewBuffer.length();
                 cairo_move_to(PCAIRO, x + radius, y);
@@ -507,14 +514,14 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 double padding = 5.0;
                 double textX   = x + padding;
 
-                if (CLICKPOS.y > (PBUFFER->pixelSize.y - 50) && CLICKPOS.x > (PBUFFER->pixelSize.x - 100))
-                    cairo_move_to(PCAIRO, textX, CLICKPOS.y - 20);
-                else if (CLICKPOS.y > (PBUFFER->pixelSize.y - 50))
-                    cairo_move_to(PCAIRO, textX, CLICKPOS.y - 20);
-                else if (CLICKPOS.x > (PBUFFER->pixelSize.x - 100))
-                    cairo_move_to(PCAIRO, textX, CLICKPOS.y + 40);
+                if (uiCenter.y > (PBUFFER->pixelSize.y - 50) && uiCenter.x > (PBUFFER->pixelSize.x - 100))
+                    cairo_move_to(PCAIRO, textX, uiCenter.y - 20);
+                else if (uiCenter.y > (PBUFFER->pixelSize.y - 50))
+                    cairo_move_to(PCAIRO, textX, uiCenter.y - 20);
+                else if (uiCenter.x > (PBUFFER->pixelSize.x - 100))
+                    cairo_move_to(PCAIRO, textX, uiCenter.y + 40);
                 else
-                    cairo_move_to(PCAIRO, textX, CLICKPOS.y + 40);
+                    cairo_move_to(PCAIRO, textX, uiCenter.y + 40);
 
                 cairo_show_text(PCAIRO, previewBuffer.c_str());
 
@@ -522,6 +529,32 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             }
             cairo_restore(PCAIRO);
             cairo_pattern_destroy(PATTERN);
+
+            // If the system cursor is hidden due to keyboard nudging,
+            // draw a visible crosshair matching the system style (unclipped)
+            if (m_bCursorHidden) {
+                const auto SCALEBUFS_INV2 = Vector2D{1.0 / SCALEBUFS.x, 1.0 / SCALEBUFS.y};
+                Vector2D    uiCenter2     = CLICKPOS + (m_vNudgeBufPx * SCALEBUFS_INV2);
+                uiCenter2.x               = std::clamp(uiCenter2.x, 0.0, PBUFFER->pixelSize.x - 1.0);
+                uiCenter2.y               = std::clamp(uiCenter2.y, 0.0, PBUFFER->pixelSize.y - 1.0);
+                const double halfLen = 8.0 / SCALEBUFS.x;
+                // Outline for contrast (black)
+                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
+                cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
+                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+                cairo_stroke(PCAIRO);
+                // Inner lines (white)
+                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+                cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
+                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+                cairo_stroke(PCAIRO);
+            }
         }
     } else if (!m_bRenderInactive && m_bCoordsInitialized) {
         cairo_set_operator(PCAIRO, CAIRO_OPERATOR_SOURCE);
@@ -541,6 +574,33 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
 
         cairo_surface_flush(PBUFFER->surface);
         cairo_pattern_destroy(PATTERNPRE);
+
+        // No zoom mode: if cursor hidden during keyboard nudging, draw crosshair at UI center
+        if (m_bCursorHidden) {
+            const auto SCALEBUFS_INV = Vector2D{1.0 / SCALEBUFS.x, 1.0 / SCALEBUFS.y};
+            const auto MOUSECOORDSABS2 = m_vLastCoords.floor() / pSurface->m_pMonitor->size;
+            const auto CLICKPOS2       = MOUSECOORDSABS2 * PBUFFER->pixelSize;
+            Vector2D    uiCenter2      = CLICKPOS2 + (m_vNudgeBufPx * SCALEBUFS_INV);
+            uiCenter2.x                = std::clamp(uiCenter2.x, 0.0, PBUFFER->pixelSize.x - 1.0);
+            uiCenter2.y                = std::clamp(uiCenter2.y, 0.0, PBUFFER->pixelSize.y - 1.0);
+            const double halfLen = 8.0 / SCALEBUFS.x;
+            // Outline for contrast (black)
+            cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
+            cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
+            cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+            cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+            cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+            cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+            cairo_stroke(PCAIRO);
+            // Inner lines (white)
+            cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+            cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
+            cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
+            cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
+            cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
+            cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
+            cairo_stroke(PCAIRO);
+        }
     }
 
     pSurface->sendFrame();
@@ -686,8 +746,14 @@ void CHyprpicker::initKeyboard() {
                         case XKB_KEY_Up: m_vNudgeBufPx.y -= step; m_keyUp = true; nudged = true; break;
                         case XKB_KEY_Down: m_vNudgeBufPx.y += step; m_keyDown = true; nudged = true; break;
                     }
-                    if (nudged)
+                    if (nudged) {
+                        // Hide the system cursor while nudging with keyboard
+                        if (!m_bCursorHidden && m_pPointer && m_lastPointerSerial && m_pCursorShapeDevice) {
+                            m_pPointer->sendSetCursor(m_lastPointerSerial, nullptr, 0, 0);
+                            m_bCursorHidden = true;
+                        }
                         markDirty();
+                    }
                 }
             } else if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
                 switch (sym) {
@@ -710,6 +776,7 @@ void CHyprpicker::initMouse() {
         m_vLastCoords        = {x, y};
         m_bCoordsInitialized = true;
         m_vNudgeBufPx        = {0, 0};
+        m_lastPointerSerial  = serial;
 
         for (auto& ls : m_vLayerSurfaces) {
             if (ls->pSurface->resource() == surface) {
@@ -718,7 +785,8 @@ void CHyprpicker::initMouse() {
             }
         }
 
-        m_pCursorShapeDevice->sendSetShape(serial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
+        if (m_pCursorShapeDevice)
+            m_pCursorShapeDevice->sendSetShape(serial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
 
         markDirty();
     });
@@ -740,6 +808,12 @@ void CHyprpicker::initMouse() {
         m_vLastCoords = {x, y};
         // reset nudge on mouse movement
         m_vNudgeBufPx = {0, 0};
+
+        // Show the system cursor again if it was hidden during keyboard nudging
+        if (m_bCursorHidden && m_pCursorShapeDevice && m_lastPointerSerial) {
+            m_pCursorShapeDevice->sendSetShape(m_lastPointerSerial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
+            m_bCursorHidden = false;
+        }
 
         markDirty();
     });

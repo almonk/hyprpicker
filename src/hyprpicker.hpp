@@ -62,6 +62,10 @@ class CHyprpicker {
     // Nudge offset for keyboard-controlled fine movement in screen buffer pixels
     Vector2D                                    m_vNudgeBufPx = {0, 0};
 
+    // Pointer cursor visibility control
+    bool                                        m_bCursorHidden = false;
+    uint32_t                                    m_lastPointerSerial = 0;
+
     // Keyboard repeat handling
     std::atomic<bool>                           m_keyLeft{false}, m_keyRight{false}, m_keyUp{false}, m_keyDown{false};
     std::atomic<int>                            m_repeatRate{0};   // chars/sec (0 or negative disables)
