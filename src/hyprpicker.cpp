@@ -44,7 +44,9 @@ void CHyprpicker::init() {
         } else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
             m_pLayerShell = makeShared<CCZwlrLayerShellV1>((wl_proxy*)wl_registry_bind((wl_registry*)m_pRegistry->resource(), name, &zwlr_layer_shell_v1_interface, 1));
         } else if (strcmp(interface, wl_seat_interface.name) == 0) {
-            m_pSeat = makeShared<CCWlSeat>((wl_proxy*)wl_registry_bind((wl_registry*)m_pRegistry->resource(), name, &wl_seat_interface, 1));
+            // Bind seat with compositor-provided version to receive repeat_info (v4+)
+            const uint32_t SEAT_VER = std::min<uint32_t>(version, 7);
+            m_pSeat = makeShared<CCWlSeat>((wl_proxy*)wl_registry_bind((wl_registry*)m_pRegistry->resource(), name, &wl_seat_interface, SEAT_VER));
 
             m_pSeat->setCapabilities([this](CCWlSeat* seat, uint32_t caps) {
                 if (caps & WL_SEAT_CAPABILITY_POINTER) {
@@ -399,13 +401,19 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
         if (!m_bNoZoom) {
             cairo_save(PCAIRO);
 
-            const auto CLICKPOSBUF = CLICKPOS / PBUFFER->pixelSize * pSurface->screenBuffer->pixelSize;
+            // Compute center position with keyboard nudge applied (in buffer pixels)
+            const auto BASEPOSBUF = CLICKPOS / PBUFFER->pixelSize * pSurface->screenBuffer->pixelSize;
+            Vector2D    centerBuf = BASEPOSBUF + m_vNudgeBufPx;
+            // Clamp to valid pixel range
+            centerBuf.x           = std::clamp(centerBuf.x, 0.0, pSurface->screenBuffer->pixelSize.x - 1.0);
+            centerBuf.y           = std::clamp(centerBuf.y, 0.0, pSurface->screenBuffer->pixelSize.y - 1.0);
 
-            const auto PIXCOLOR = getColorFromPixel(pSurface, CLICKPOSBUF);
+            const auto PIXCOLOR = getColorFromPixel(pSurface, centerBuf);
             cairo_set_source_rgba(PCAIRO, PIXCOLOR.r / 255.f, PIXCOLOR.g / 255.f, PIXCOLOR.b / 255.f, PIXCOLOR.a / 255.f);
 
             cairo_scale(PCAIRO, 1, 1);
 
+            // Keep the zoom circle centered at the cursor position
             cairo_arc(PCAIRO, CLICKPOS.x, CLICKPOS.y, 105 / SCALEBUFS.x, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
 
@@ -421,17 +429,18 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             cairo_pattern_set_filter(PATTERN, CAIRO_FILTER_NEAREST);
             cairo_matrix_t matrix;
             cairo_matrix_init_identity(&matrix);
-            cairo_matrix_translate(&matrix, CLICKPOSBUF.x + 0.5f, CLICKPOSBUF.y + 0.5f);
+            cairo_matrix_translate(&matrix, centerBuf.x + 0.5f, centerBuf.y + 0.5f);
             cairo_matrix_scale(&matrix, 0.1f, 0.1f);
-            cairo_matrix_translate(&matrix, (-CLICKPOSBUF.x / SCALEBUFS.x) - 0.5f, (-CLICKPOSBUF.y / SCALEBUFS.y) - 0.5f);
+            cairo_matrix_translate(&matrix, (-centerBuf.x / SCALEBUFS.x) - 0.5f, (-centerBuf.y / SCALEBUFS.y) - 0.5f);
             cairo_pattern_set_matrix(PATTERN, &matrix);
             cairo_set_source(PCAIRO, PATTERN);
+            // Keep the zoom circle centered at the cursor position
             cairo_arc(PCAIRO, CLICKPOS.x, CLICKPOS.y, 100 / SCALEBUFS.x, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
             cairo_paint(PCAIRO);
 
             if (!m_bDisablePreview) {
-                const auto  currentColor = getColorFromPixel(pSurface, CLICKPOS);
+                const auto  currentColor = getColorFromPixel(pSurface, centerBuf);
                 std::string previewBuffer;
                 switch (m_bSelectedOutputMode) {
                     case OUTPUT_HEX: {
@@ -563,6 +572,56 @@ CColor CHyprpicker::getColorFromPixel(CLayerSurface* pLS, Vector2D pix) {
     return CColor{.r = px->red, .g = px->green, .b = px->blue, .a = px->alpha};
 }
 
+void CHyprpicker::startRepeatThread() {
+    if (m_repeatThreadRunning.exchange(true))
+        return;
+
+    m_repeatThread = std::thread([this]() {
+        using namespace std::chrono;
+        bool                         anyPrev = false;
+        steady_clock::time_point     pressStart{};
+        steady_clock::time_point     nextRepeat{};
+
+        while (true) {
+            const bool any = m_keyLeft || m_keyRight || m_keyUp || m_keyDown;
+
+            if (any) {
+                const auto now = steady_clock::now();
+                if (!anyPrev) {
+                    anyPrev    = true;
+                    pressStart = now;
+                    nextRepeat = pressStart + milliseconds(std::max(0, m_repeatDelay.load()));
+                } else {
+                    const int rate = m_repeatRate.load();
+                    if (rate > 0) {
+                        if (now >= nextRepeat) {
+                            const double step = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE)) ? 8.0 : 1.0;
+                            if (!m_bNoZoom && m_bCoordsInitialized && m_pLastSurface) {
+                                if (m_keyLeft)
+                                    m_vNudgeBufPx.x -= step;
+                                if (m_keyRight)
+                                    m_vNudgeBufPx.x += step;
+                                if (m_keyUp)
+                                    m_vNudgeBufPx.y -= step;
+                                if (m_keyDown)
+                                    m_vNudgeBufPx.y += step;
+                                markDirty();
+                            }
+                            // schedule next
+                            nextRepeat = now + duration_cast<milliseconds>(duration<double>(1.0 / static_cast<double>(rate)));
+                        }
+                    }
+                }
+            } else {
+                anyPrev = false;
+            }
+
+            std::this_thread::sleep_for(milliseconds(5));
+        }
+    });
+    m_repeatThread.detach();
+}
+
 void CHyprpicker::initKeyboard() {
     m_pKeyboard->setKeymap([this](CCWlKeyboard* r, wl_keyboard_keymap_format format, int32_t fd, uint32_t size) {
         if (!m_pXKBContext)
@@ -594,16 +653,51 @@ void CHyprpicker::initKeyboard() {
             Debug::log(ERR, "Failed to create xkb state");
             return;
         }
+        // Start repeat thread now that keyboard is ready
+        startRepeatThread();
+    });
+
+    // Update xkb modifier state so Shift detection works
+    m_pKeyboard->setModifiers([this](CCWlKeyboard* r, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
+        if (m_pXKBState)
+            xkb_state_update_mask(m_pXKBState, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+    });
+
+    // Receive repeat info (rate chars/sec, delay ms) from compositor (Hyprland)
+    m_pKeyboard->setRepeatInfo([this](CCWlKeyboard* r, int32_t rate, int32_t delay) {
+        m_repeatRate  = rate;
+        m_repeatDelay = delay;
     });
 
     m_pKeyboard->setKey([this](CCWlKeyboard* r, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
-        if (state != WL_KEYBOARD_KEY_STATE_PRESSED)
-            return;
-
         if (m_pXKBState) {
-            if (xkb_state_key_get_one_sym(m_pXKBState, key + 8) == XKB_KEY_Escape)
-                finish(2);
-        } else if (key == 1) // Assume keycode 1 is escape
+            const xkb_keysym_t sym = xkb_state_key_get_one_sym(m_pXKBState, key + 8);
+            if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+                if (sym == XKB_KEY_Escape) {
+                    finish(2);
+                    return;
+                }
+                if (!m_bNoZoom && m_bCoordsInitialized && m_pLastSurface) {
+                    const double step = xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) ? 8.0 : 1.0;
+                    bool         nudged = false;
+                    switch (sym) {
+                        case XKB_KEY_Left: m_vNudgeBufPx.x -= step; m_keyLeft = true; nudged = true; break;
+                        case XKB_KEY_Right: m_vNudgeBufPx.x += step; m_keyRight = true; nudged = true; break;
+                        case XKB_KEY_Up: m_vNudgeBufPx.y -= step; m_keyUp = true; nudged = true; break;
+                        case XKB_KEY_Down: m_vNudgeBufPx.y += step; m_keyDown = true; nudged = true; break;
+                    }
+                    if (nudged)
+                        markDirty();
+                }
+            } else if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+                switch (sym) {
+                    case XKB_KEY_Left: m_keyLeft = false; break;
+                    case XKB_KEY_Right: m_keyRight = false; break;
+                    case XKB_KEY_Up: m_keyUp = false; break;
+                    case XKB_KEY_Down: m_keyDown = false; break;
+                }
+            }
+        } else if (key == 1 && state == WL_KEYBOARD_KEY_STATE_PRESSED) // Assume keycode 1 is escape
             finish(2);
     });
 }
@@ -615,6 +709,7 @@ void CHyprpicker::initMouse() {
 
         m_vLastCoords        = {x, y};
         m_bCoordsInitialized = true;
+        m_vNudgeBufPx        = {0, 0};
 
         for (auto& ls : m_vLayerSurfaces) {
             if (ls->pSurface->resource() == surface) {
@@ -643,6 +738,8 @@ void CHyprpicker::initMouse() {
         auto y = wl_fixed_to_double(surface_y);
 
         m_vLastCoords = {x, y};
+        // reset nudge on mouse movement
+        m_vNudgeBufPx = {0, 0};
 
         markDirty();
     });
@@ -651,9 +748,12 @@ void CHyprpicker::initMouse() {
         // https://www.w3.org/TR/2008/REC-WCAG20-20081211/#relativeluminancedef
         const auto FLUMI = [](const float& c) -> float { return c <= 0.03928 ? c / 12.92 : powf((c + 0.055) / 1.055, 2.4); };
 
-        // get the px and print it
+        // get the px and print it (apply keyboard nudge in screen buffer pixels)
         const auto MOUSECOORDSABS = m_vLastCoords.floor() / m_pLastSurface->m_pMonitor->size;
-        const auto CLICKPOS       = MOUSECOORDSABS * m_pLastSurface->screenBuffer->pixelSize;
+        Vector2D   CLICKPOS       = MOUSECOORDSABS * m_pLastSurface->screenBuffer->pixelSize;
+        CLICKPOS += m_vNudgeBufPx;
+        CLICKPOS.x = std::clamp(CLICKPOS.x, 0.0, m_pLastSurface->screenBuffer->pixelSize.x - 1.0);
+        CLICKPOS.y = std::clamp(CLICKPOS.y, 0.0, m_pLastSurface->screenBuffer->pixelSize.y - 1.0);
 
         const auto COL = getColorFromPixel(m_pLastSurface, CLICKPOS);
 

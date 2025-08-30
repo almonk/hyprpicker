@@ -3,6 +3,7 @@
 #include "defines.hpp"
 #include "helpers/LayerSurface.hpp"
 #include "helpers/PoolBuffer.hpp"
+#include <atomic>
 
 enum eOutputMode {
     OUTPUT_CMYK = 0,
@@ -57,6 +58,17 @@ class CHyprpicker {
 
     Vector2D                                    m_vLastCoords;
     bool                                        m_bCoordsInitialized = false;
+
+    // Nudge offset for keyboard-controlled fine movement in screen buffer pixels
+    Vector2D                                    m_vNudgeBufPx = {0, 0};
+
+    // Keyboard repeat handling
+    std::atomic<bool>                           m_keyLeft{false}, m_keyRight{false}, m_keyUp{false}, m_keyDown{false};
+    std::atomic<int>                            m_repeatRate{0};   // chars/sec (0 or negative disables)
+    std::atomic<int>                            m_repeatDelay{600}; // ms
+    std::atomic<bool>                           m_repeatThreadRunning{false};
+    std::thread                                  m_repeatThread;
+    void                                        startRepeatThread();
 
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 
