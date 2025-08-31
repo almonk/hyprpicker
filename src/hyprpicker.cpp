@@ -86,8 +86,9 @@ void CHyprpicker::init() {
 
     wl_display_roundtrip(m_pWLDisplay);
 
+    // Cursor shape protocol is optional and not required when hiding cursor
     if (!m_pCursorShapeMgr)
-        Debug::log(ERR, "cursor_shape_v1 not supported, cursor won't be affected");
+        Debug::log(TRACE, "cursor_shape_v1 not present (unused)");
 
     if (!m_pScreencopyMgr) {
         Debug::log(CRIT, "zwlr_screencopy_v1 not supported, can't proceed");
@@ -508,39 +509,57 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 const double cellW = m_zoomMagCurrent / SCALEBUFS.x;
                 const double cellH = m_zoomMagCurrent / SCALEBUFS.y;
 
-                // Vertical grid lines at pixel boundaries (x = k + 0.5 in source space)
-                const double minVXSrc = centerBuf.x - (zoomRadius / cellW);
-                const double maxVXSrc = centerBuf.x + (zoomRadius / cellW);
-                const long   vStart   = (long)std::floor(minVXSrc - 0.5);
-                const long   vEnd     = (long)std::ceil(maxVXSrc - 0.5);
+                // Snap visual grid to the nearest source pixel so it stays static
+                const double pxX           = std::floor(centerBuf.x);
+                const double pxY           = std::floor(centerBuf.y);
+                const double centerBoundX  = pxX + 0.5; // center of the pixel under the cursor
+                const double centerBoundY  = pxY + 0.5;
 
-                // Horizontal grid lines at pixel boundaries (y = k + 0.5 in source space)
-                const double minVYSrc = centerBuf.y - (zoomRadius / cellH);
-                const double maxVYSrc = centerBuf.y + (zoomRadius / cellH);
-                const long   hStart   = (long)std::floor(minVYSrc - 0.5);
-                const long   hEnd     = (long)std::ceil(maxVYSrc - 0.5);
+                // Compute visible boundary index range around the zoom circle (boundaries at integers)
+                const double minVXSrc = centerBoundX - (zoomRadius / cellW);
+                const double maxVXSrc = centerBoundX + (zoomRadius / cellW);
+                const long   vStart   = (long)std::floor(minVXSrc);
+                const long   vEnd     = (long)std::ceil(maxVXSrc);
 
+                const double minVYSrc = centerBoundY - (zoomRadius / cellH);
+                const double maxVYSrc = centerBoundY + (zoomRadius / cellH);
+                const long   hStart   = (long)std::floor(minVYSrc);
+                const long   hEnd     = (long)std::ceil(maxVYSrc);
+
+                cairo_save(PCAIRO);
                 // Very faint lines; hairline width in UI pixels
+                cairo_set_antialias(PCAIRO, CAIRO_ANTIALIAS_NONE);
                 cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 0.12);
                 cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
 
-                // Vertical lines
+                // Vertical lines (at integer x boundaries)
                 for (long j = vStart; j <= vEnd; ++j) {
-                    const double srcX  = (double)j + 0.5; // boundary
-                    const double drawX = uiCenter.x + (srcX - centerBuf.x) * cellW;
+                    const double srcX  = (double)j;
+                    const double drawX = uiCenter.x + (srcX - centerBoundX) * cellW;
                     cairo_move_to(PCAIRO, drawX, uiCenter.y - zoomRadius);
                     cairo_line_to(PCAIRO, drawX, uiCenter.y + zoomRadius);
                 }
 
-                // Horizontal lines
+                // Horizontal lines (at integer y boundaries)
                 for (long i = hStart; i <= hEnd; ++i) {
-                    const double srcY  = (double)i + 0.5; // boundary
-                    const double drawY = uiCenter.y + (srcY - centerBuf.y) * cellH;
+                    const double srcY  = (double)i;
+                    const double drawY = uiCenter.y + (srcY - centerBoundY) * cellH;
                     cairo_move_to(PCAIRO, uiCenter.x - zoomRadius, drawY);
                     cairo_line_to(PCAIRO, uiCenter.x + zoomRadius, drawY);
                 }
 
                 cairo_stroke(PCAIRO);
+
+                // Highlight the central pixel with a solid white border, fixed at center
+                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+                cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
+                const double leftUI   = uiCenter.x - 0.5 * cellW;
+                const double rightUI  = uiCenter.x + 0.5 * cellW;
+                const double topUI    = uiCenter.y - 0.5 * cellH;
+                const double bottomUI = uiCenter.y + 0.5 * cellH;
+                cairo_rectangle(PCAIRO, leftUI, topUI, rightUI - leftUI, bottomUI - topUI);
+                cairo_stroke(PCAIRO);
+                cairo_restore(PCAIRO);
             }
 
             if (!m_bDisablePreview) {
@@ -943,8 +962,9 @@ void CHyprpicker::initMouse() {
             }
         }
 
-        if (m_pCursorShapeDevice)
-            m_pCursorShapeDevice->sendSetShape(serial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
+        // Hide the system cursor when hyprpicker is active
+        // Wayland: set a null cursor surface to hide pointer
+        m_pPointer->sendSetCursor(serial, nullptr, 0, 0);
 
         markDirty();
     });
