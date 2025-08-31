@@ -91,6 +91,10 @@ class CHyprpicker {
     bool                                        m_lockAperture = false;
     double                                      m_lockedAperture = 0.0; // ui px per src px * src px = ui px radius
 
+    // Helpers to consolidate scroll handling
+    void                                        handleAltToggle(bool toTriple);
+    void                                        handleRadiusAdjust(double delta);
+
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 
     int                                         createPoolFile(size_t, std::string&);

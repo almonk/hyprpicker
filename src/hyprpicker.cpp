@@ -448,9 +448,9 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 m_zoomLastTick  = now;
                 if (dt > 0.0) {
                     // Snappier critically-damped spring
-                    const double k = 1000.0; // stiffness (higher = snappier)
-                    const double zeta = 1.0; // damping ratio (critical)
-                    const double c = 2.0 * std::sqrt(k) * zeta;
+                    const double k    = SPRING_K;
+                    const double zeta = SPRING_ZETA;
+                    const double c    = 2.0 * std::sqrt(k) * zeta;
                     // Radius
                     {
                         const double x = m_zoomRadiusCurrentSrcPx - m_zoomRadiusTargetSrcPx;
@@ -490,7 +490,8 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             // Keep the zoom circle centered at the (possibly nudged) UI center
             const double cellWForRadius = m_zoomMagCurrent / SCALEBUFS.x;
             const double zoomRadiusUI   = m_zoomRadiusCurrentSrcPx * cellWForRadius;
-            const double outerRadiusUI  = zoomRadiusUI + 5.0 / SCALEBUFS.x; // thin border ring
+            const double onePxUI        = 1.0 / std::min(SCALEBUFS.x, SCALEBUFS.y);
+            const double outerRadiusUI  = zoomRadiusUI + RING_OFFSET_UI_PX * onePxUI; // thin border ring
             cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, outerRadiusUI, 0, 2 * M_PI);
             cairo_clip(PCAIRO);
 
@@ -544,8 +545,8 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 cairo_save(PCAIRO);
                 // Very faint lines; hairline width in UI pixels
                 cairo_set_antialias(PCAIRO, CAIRO_ANTIALIAS_NONE);
-                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 0.12);
-                cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
+                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, GRID_ALPHA);
+                cairo_set_line_width(PCAIRO, onePxUI);
 
                 // Vertical lines (at integer x boundaries)
                 for (long j = vStart; j <= vEnd; ++j) {
@@ -567,7 +568,8 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
 
                 // Highlight the central pixel with a solid white border, fixed at center
                 cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
-                cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
+                cairo_set_line_width(PCAIRO, 2.0 * onePxUI);
+                cairo_set_line_join(PCAIRO, CAIRO_LINE_JOIN_ROUND);
                 const double leftUI   = uiCenter.x - 0.5 * cellW;
                 const double rightUI  = uiCenter.x + 0.5 * cellW;
                 const double topUI    = uiCenter.y - 0.5 * cellH;
@@ -667,22 +669,21 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             {
                 cairo_save(PCAIRO);
                 cairo_set_antialias(PCAIRO, CAIRO_ANTIALIAS_DEFAULT);
+                cairo_set_line_join(PCAIRO, CAIRO_LINE_JOIN_ROUND);
 
-                // Base radii in UI pixels
-                const double onePxUI      = 1.0 / SCALEBUFS.x;
-                const double ringOuterRad = zoomRadiusUI + 5.0 * onePxUI; // aligns with thin ring offset
+                const double ringOuterRad = zoomRadiusUI + RING_OFFSET_UI_PX * onePxUI; // aligns with thin ring offset
 
                 // Shadow: soft halo outside the ring
-                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 0.25);
-                cairo_set_line_width(PCAIRO, 4.0 * onePxUI);
-                cairo_new_sub_path(PCAIRO);
+                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, RING_SHADOW_ALPHA);
+                cairo_set_line_width(PCAIRO, RING_SHADOW_PX * onePxUI);
+                cairo_new_path(PCAIRO);
                 cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad + 1.0 * onePxUI, 0, 2 * M_PI);
                 cairo_stroke(PCAIRO);
 
                 // White border: crisp 2px stroke around the ring
                 cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
-                cairo_set_line_width(PCAIRO, 2.0 * onePxUI);
-                cairo_new_sub_path(PCAIRO);
+                cairo_set_line_width(PCAIRO, RING_BORDER_PX * onePxUI);
+                cairo_new_path(PCAIRO);
                 cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad, 0, 2 * M_PI);
                 cairo_stroke(PCAIRO);
 
@@ -722,6 +723,28 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
     PBUFFER->surface = nullptr;
 
     pSurface->rendered = true;
+}
+
+// Consolidated scroll helpers
+void CHyprpicker::handleAltToggle(bool toTriple) {
+    if (!m_zoomMagBaseSet) {
+        m_zoomMagBase    = m_zoomMagTarget;
+        m_zoomMagBaseSet = true;
+    }
+    const double targetMag = toTriple ? (m_zoomMagBase * ZOOM_TOGGLE_FACTOR) : m_zoomMagBase;
+    m_zoomMagTarget        = std::clamp(targetMag, ZOOM_MAG_MIN, ZOOM_MAG_MAX);
+    // Lock aperture across the animated transition
+    m_lockedAperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+    m_lockAperture   = true;
+    if (m_zoomMagTarget > 0.01)
+        m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
+}
+
+void CHyprpicker::handleRadiusAdjust(double delta) {
+    m_zoomRadiusTargetSrcPx += delta;
+    m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
+    // Not an ALT zoom; ensure we aren't locking during plain radius changes
+    m_lockAperture = false;
 }
 
 CColor CHyprpicker::getColorFromPixel(CLayerSurface* pLS, Vector2D pix) {
@@ -1024,20 +1047,11 @@ void CHyprpicker::initMouse() {
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
-            if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
-            const double targetMag = (steps < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
-            m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
-            // Lock aperture across the animated transition
-            m_lockedAperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
-            m_lockAperture   = true;
-            if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, 4.0, 60.0);
+            handleAltToggle(steps < 0);
         } else {
             const double stepRad = withShift ? 6.0 : 3.0;
-            m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
-            m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
-            // Not an ALT zoom; ensure we aren't locking
-            m_lockAperture = false;
+            const double delta   = (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
+            handleRadiusAdjust(delta);
         }
         markDirty();
     });
@@ -1054,18 +1068,11 @@ void CHyprpicker::initMouse() {
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
-            if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
-            const double targetMag = (steps < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
-            m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
-            m_lockedAperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
-            m_lockAperture   = true;
-            if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, 4.0, 60.0);
+            handleAltToggle(steps < 0);
         } else {
             const double stepRad = withShift ? 6.0 : 3.0;
-            m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
-            m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
-            m_lockAperture          = false;
+            const double delta   = (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
+            handleRadiusAdjust(delta);
         }
         markDirty();
     });
@@ -1081,18 +1088,11 @@ void CHyprpicker::initMouse() {
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
-            if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
-            const double targetMag = (v < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
-            m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
-            m_lockedAperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
-            m_lockAperture   = true;
-            if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, 4.0, 60.0);
+            handleAltToggle(v < 0);
         } else {
             const double stepRad = withShift ? 1.0 : 0.5; // more responsive smooth scroll
-            m_zoomRadiusTargetSrcPx += (v < 0 ? +stepRad : -stepRad);
-            m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
-            m_lockAperture          = false;
+            const double delta   = (v < 0 ? +stepRad : -stepRad);
+            handleRadiusAdjust(delta);
         }
         markDirty();
     });
