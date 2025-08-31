@@ -87,9 +87,9 @@ class CHyprpicker {
     // Base magnification for discrete toggle (ALT-scroll). Initialized on first use.
     double                                      m_zoomMagBase = 10.0;
     bool                                        m_zoomMagBaseSet = false;
-    // Desired UI aperture (circle diameter in UI px depends on mag*radius). Keep constant during ALT zoom.
-    double                                      m_uiApertureTarget = 10.0 * 10.0; // init to mag*radius (updated on init)
-    bool                                        m_uiApertureSet = false;
+    // Keep UI circle size constant during ALT zoom
+    bool                                        m_lockAperture = false;
+    double                                      m_lockedAperture = 0.0; // ui px per src px * src px = ui px radius
 
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 

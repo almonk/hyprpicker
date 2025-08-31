@@ -442,10 +442,7 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                         m_zoomMagBase    = m_zoomMagTarget;
                         m_zoomMagBaseSet = true;
                     }
-                    if (!m_uiApertureSet) {
-                        m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
-                        m_uiApertureSet    = true;
-                    }
+                    // Aperture will be preserved on ALT zoom using current values at the event
                 }
                 const double dt = duration<double>(now - m_zoomLastTick).count();
                 m_zoomLastTick  = now;
@@ -476,6 +473,16 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                             m_zoomMagCurrent = m_zoomMagTarget;
                             m_zoomMagVel     = 0.0;
                         }
+                    }
+                    // If locking aperture (ALT zoom transition), force radius to keep UI circle constant
+                    if (m_lockAperture) {
+                        const double targetR = (m_zoomMagCurrent > 0.01) ? (m_lockedAperture / m_zoomMagCurrent) : m_zoomRadiusCurrentSrcPx;
+                        m_zoomRadiusCurrentSrcPx = targetR;
+                        m_zoomRadiusTargetSrcPx  = targetR;
+                        m_zoomRadiusVel          = 0.0;
+                        // Release the lock once magnification settles at target
+                        if (std::abs(m_zoomMagCurrent - m_zoomMagTarget) < 0.01 && std::abs(m_zoomMagVel) < 0.01)
+                            m_lockAperture = false;
                     }
                 }
             }
@@ -1018,19 +1025,19 @@ void CHyprpicker::initMouse() {
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
             if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
-            if (!m_uiApertureSet) { m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget; m_uiApertureSet = true; }
             const double targetMag = (steps < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
             m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
-            // Keep UI aperture constant across ALT zooms using stored aperture
+            // Lock aperture across the animated transition
+            m_lockedAperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            m_lockAperture   = true;
             if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(m_uiApertureTarget / m_zoomMagTarget, 4.0, 60.0);
+                m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, 4.0, 60.0);
         } else {
             const double stepRad = withShift ? 6.0 : 3.0;
             m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
             m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
-            // Update desired UI aperture to match user's new circle size
-            m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
-            m_uiApertureSet    = true;
+            // Not an ALT zoom; ensure we aren't locking
+            m_lockAperture = false;
         }
         markDirty();
     });
@@ -1048,17 +1055,17 @@ void CHyprpicker::initMouse() {
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
             if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
-            if (!m_uiApertureSet) { m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget; m_uiApertureSet = true; }
             const double targetMag = (steps < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
             m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
+            m_lockedAperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            m_lockAperture   = true;
             if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(m_uiApertureTarget / m_zoomMagTarget, 4.0, 60.0);
+                m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, 4.0, 60.0);
         } else {
             const double stepRad = withShift ? 6.0 : 3.0;
             m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
             m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
-            m_uiApertureTarget      = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
-            m_uiApertureSet         = true;
+            m_lockAperture          = false;
         }
         markDirty();
     });
@@ -1075,17 +1082,17 @@ void CHyprpicker::initMouse() {
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
             if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
-            if (!m_uiApertureSet) { m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget; m_uiApertureSet = true; }
             const double targetMag = (v < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
             m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
+            m_lockedAperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            m_lockAperture   = true;
             if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(m_uiApertureTarget / m_zoomMagTarget, 4.0, 60.0);
+                m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, 4.0, 60.0);
         } else {
             const double stepRad = withShift ? 1.0 : 0.5; // more responsive smooth scroll
             m_zoomRadiusTargetSrcPx += (v < 0 ? +stepRad : -stepRad);
             m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
-            m_uiApertureTarget      = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
-            m_uiApertureSet         = true;
+            m_lockAperture          = false;
         }
         markDirty();
     });
