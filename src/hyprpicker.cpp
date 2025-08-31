@@ -438,6 +438,14 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                     m_zoomRadiusVel          = 0.0;
                     m_zoomMagCurrent         = m_zoomMagTarget;
                     m_zoomMagVel             = 0.0;
+                    if (!m_zoomMagBaseSet) {
+                        m_zoomMagBase    = m_zoomMagTarget;
+                        m_zoomMagBaseSet = true;
+                    }
+                    if (!m_uiApertureSet) {
+                        m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
+                        m_uiApertureSet    = true;
+                    }
                 }
                 const double dt = duration<double>(now - m_zoomLastTick).count();
                 m_zoomLastTick  = now;
@@ -562,6 +570,8 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 cairo_restore(PCAIRO);
             }
 
+            // (Ring border and shadow moved after clip restore so they are visible)
+
             if (!m_bDisablePreview) {
                 const auto  currentColor = getColorFromPixel(pSurface, centerBuf);
                 std::string previewBuffer;
@@ -645,6 +655,32 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             }
             cairo_restore(PCAIRO);
             cairo_pattern_destroy(PATTERN);
+
+            // Add a 2px white border and a subtle shadow around the color ring (outside any clip)
+            {
+                cairo_save(PCAIRO);
+                cairo_set_antialias(PCAIRO, CAIRO_ANTIALIAS_DEFAULT);
+
+                // Base radii in UI pixels
+                const double onePxUI      = 1.0 / SCALEBUFS.x;
+                const double ringOuterRad = zoomRadiusUI + 5.0 * onePxUI; // aligns with thin ring offset
+
+                // Shadow: soft halo outside the ring
+                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 0.25);
+                cairo_set_line_width(PCAIRO, 4.0 * onePxUI);
+                cairo_new_sub_path(PCAIRO);
+                cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad + 1.0 * onePxUI, 0, 2 * M_PI);
+                cairo_stroke(PCAIRO);
+
+                // White border: crisp 2px stroke around the ring
+                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+                cairo_set_line_width(PCAIRO, 2.0 * onePxUI);
+                cairo_new_sub_path(PCAIRO);
+                cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad, 0, 2 * M_PI);
+                cairo_stroke(PCAIRO);
+
+                cairo_restore(PCAIRO);
+            }
 
             // removed custom cursor overlay drawing
         }
@@ -981,17 +1017,20 @@ void CHyprpicker::initMouse() {
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
-            const double stepMag = withShift ? 2.0 : 1.0;
-            m_zoomMagTarget += (steps < 0 ? +stepMag * std::abs(steps) : -stepMag * std::abs(steps));
-            m_zoomMagTarget = std::clamp(m_zoomMagTarget, 2.0, 60.0);
-            // Keep circle aperture constant in UI by adjusting radius inversely
-            const double aperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
+            if (!m_uiApertureSet) { m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget; m_uiApertureSet = true; }
+            const double targetMag = (steps < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
+            m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
+            // Keep UI aperture constant across ALT zooms using stored aperture
             if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(aperture / m_zoomMagTarget, 4.0, 60.0);
+                m_zoomRadiusTargetSrcPx = std::clamp(m_uiApertureTarget / m_zoomMagTarget, 4.0, 60.0);
         } else {
             const double stepRad = withShift ? 6.0 : 3.0;
             m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
             m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+            // Update desired UI aperture to match user's new circle size
+            m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
+            m_uiApertureSet    = true;
         }
         markDirty();
     });
@@ -1008,16 +1047,18 @@ void CHyprpicker::initMouse() {
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
-            const double stepMag = withShift ? 2.0 : 1.0;
-            m_zoomMagTarget += (steps < 0 ? +stepMag * std::abs(steps) : -stepMag * std::abs(steps));
-            m_zoomMagTarget = std::clamp(m_zoomMagTarget, 2.0, 60.0);
-            const double aperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
+            if (!m_uiApertureSet) { m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget; m_uiApertureSet = true; }
+            const double targetMag = (steps < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
+            m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
             if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(aperture / m_zoomMagTarget, 4.0, 60.0);
+                m_zoomRadiusTargetSrcPx = std::clamp(m_uiApertureTarget / m_zoomMagTarget, 4.0, 60.0);
         } else {
             const double stepRad = withShift ? 6.0 : 3.0;
             m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
             m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+            m_uiApertureTarget      = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
+            m_uiApertureSet         = true;
         }
         markDirty();
     });
@@ -1033,16 +1074,18 @@ void CHyprpicker::initMouse() {
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
-            const double stepMag = withShift ? 0.5 : 0.25; // smooth scroll finer control
-            m_zoomMagTarget += (v < 0 ? +stepMag : -stepMag);
-            m_zoomMagTarget = std::clamp(m_zoomMagTarget, 2.0, 60.0);
-            const double aperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            if (!m_zoomMagBaseSet) { m_zoomMagBase = m_zoomMagTarget; m_zoomMagBaseSet = true; }
+            if (!m_uiApertureSet) { m_uiApertureTarget = m_zoomRadiusTargetSrcPx * m_zoomMagTarget; m_uiApertureSet = true; }
+            const double targetMag = (v < 0 ? m_zoomMagBase * 3.0 : m_zoomMagBase);
+            m_zoomMagTarget        = std::clamp(targetMag, 2.0, 60.0);
             if (m_zoomMagTarget > 0.01)
-                m_zoomRadiusTargetSrcPx = std::clamp(aperture / m_zoomMagTarget, 4.0, 60.0);
+                m_zoomRadiusTargetSrcPx = std::clamp(m_uiApertureTarget / m_zoomMagTarget, 4.0, 60.0);
         } else {
             const double stepRad = withShift ? 1.0 : 0.5; // more responsive smooth scroll
             m_zoomRadiusTargetSrcPx += (v < 0 ? +stepRad : -stepRad);
             m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+            m_uiApertureTarget      = m_zoomRadiusTargetSrcPx * m_zoomMagTarget;
+            m_uiApertureSet         = true;
         }
         markDirty();
     });
