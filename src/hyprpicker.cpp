@@ -741,15 +741,16 @@ void CHyprpicker::handleAltToggle(bool toTriple) {
 }
 
 void CHyprpicker::handleRadiusToggle(bool toDouble) {
-    if (!m_zoomRadiusBaseSet) {
-        // Use current target as the base so we toggle relative to the user's current setting
-        m_zoomRadiusBase    = m_zoomRadiusTargetSrcPx;
-        m_zoomRadiusBaseSet = true;
-        // Clamp base to allowed range
-        m_zoomRadiusBase = std::clamp(m_zoomRadiusBase, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
+    // Seed base UI aperture from the current circle size
+    if (!m_apertureBaseSet) {
+        m_apertureBaseUI = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+        m_apertureBaseSet = true;
     }
-    const double targetRadius = toDouble ? (m_zoomRadiusBase * 2.0) : m_zoomRadiusBase;
-    m_zoomRadiusTargetSrcPx   = std::clamp(targetRadius, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
+    const double desiredAperture = toDouble ? (m_apertureBaseUI * 2.0) : m_apertureBaseUI;
+    // Convert desired aperture to a radius at the current magnification
+    if (m_zoomMagCurrent > 0.01) {
+        m_zoomRadiusTargetSrcPx = std::clamp(desiredAperture / m_zoomMagCurrent, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
+    }
     // Not an ALT zoom; ensure we aren't locking during radius toggles
     m_lockAperture = false;
 }
@@ -1051,7 +1052,7 @@ void CHyprpicker::initMouse() {
         if (steps == 0)
             return;
         // Modifiers
-        const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
+        // shift not used in toggled zoom modes
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
             handleAltToggle(steps < 0);
@@ -1071,7 +1072,7 @@ void CHyprpicker::initMouse() {
         int steps = value120 / 120; // multiples of 120 per notch
         if (steps == 0)
             steps = (value120 > 0 ? 1 : -1);
-        const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
+        // shift not used in toggled zoom modes
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
             handleAltToggle(steps < 0);
@@ -1089,7 +1090,7 @@ void CHyprpicker::initMouse() {
         const double v = wl_fixed_to_double(value);
         if (std::abs(v) < 0.01)
             return;
-        const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
+        // shift not used in toggled zoom modes
         const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
         if (withAlt) {
             handleAltToggle(v < 0);

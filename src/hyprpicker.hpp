@@ -95,9 +95,9 @@ class CHyprpicker {
     void                                        handleAltToggle(bool toTriple);
     void                                        handleRadiusToggle(bool toDouble);
 
-    // Base radius for discrete toggle (scroll without ALT)
-    double                                      m_zoomRadiusBase = 10.0;
-    bool                                        m_zoomRadiusBaseSet = false;
+    // Base UI aperture (radius * magnification) for discrete radius toggle
+    double                                      m_apertureBaseUI = 0.0;
+    bool                                        m_apertureBaseSet = false;
 
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 
