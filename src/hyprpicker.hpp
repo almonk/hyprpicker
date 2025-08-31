@@ -123,6 +123,15 @@ class CHyprpicker {
     std::vector<std::string>                    m_multiBuffer;
     bool                                        m_multiMode = false;
 
+    struct SLabelStackItem {
+        std::string text;
+        double      offsetCurrentUI = 0.0; // animated vertical offset in UI pixels
+        double      offsetTargetUI  = 0.0; // target offset in UI pixels
+    };
+    std::vector<SLabelStackItem>                m_previewStack;
+    std::chrono::steady_clock::time_point       m_uiAnimLastTick{};
+    bool                                        m_uiAnimInitialized = false;
+
   private:
 };
 

@@ -43,3 +43,9 @@ constexpr double RING_BORDER_PX      = 2.0;
 constexpr double RING_SHADOW_PX      = 4.0;
 constexpr double RING_SHADOW_ALPHA   = 0.25;
 constexpr double GRID_ALPHA          = 0.12;
+
+// Preview label stacking
+constexpr double LABEL_STACK_SPACING_UI_PX = 22.0; // vertical spacing between stacked labels
+constexpr double LABEL_STACK_MARGIN_UI_PX  = 2.0;  // extra gap between labels
+constexpr double LABEL_HEIGHT_UI_PX        = 28.0; // bubble height (keep in sync with draw)
+constexpr double LABEL_ANIM_SPEED          = 12.0; // larger = faster approach to target (1/s)

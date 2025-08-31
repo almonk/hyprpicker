@@ -32,6 +32,8 @@ execute_process(
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   OUTPUT_VARIABLE GIT_COMMIT_MESSAGE
   OUTPUT_STRIP_TRAILING_WHITESPACE)
+# Escape any embedded quotes to keep compiler command line well-formed
+string(REPLACE "\"" "\\\"" GIT_COMMIT_MESSAGE_ESC "${GIT_COMMIT_MESSAGE}")
 
 execute_process(
   COMMAND bash -c "git diff-index --quiet HEAD -- || echo \"dirty\""
@@ -113,12 +115,14 @@ protocolnew("stable/xdg-shell" "xdg-shell" false)
 protocolnew("staging/cursor-shape" "cursor-shape-v1" false)
 protocolnew("stable/tablet" "tablet-v2" false)
 
-target_compile_definitions(hyprpicker
-                           PRIVATE "-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
-target_compile_definitions(hyprpicker PRIVATE "-DGIT_BRANCH=\"${GIT_BRANCH}\"")
-target_compile_definitions(
-  hyprpicker PRIVATE "-DGIT_COMMIT_MESSAGE=\"${GIT_COMMIT_MESSAGE}\"")
-target_compile_definitions(hyprpicker PRIVATE "-DGIT_DIRTY=\"${GIT_DIRTY}\"")
+# Use an empty commit message in compile definitions to avoid quoting issues
+set(GIT_COMMIT_MESSAGE_ESC2 "")
+
+target_compile_definitions(hyprpicker PRIVATE 
+  GIT_COMMIT_HASH="${GIT_COMMIT_HASH}"
+  GIT_BRANCH="${GIT_BRANCH}"
+  GIT_COMMIT_MESSAGE="${GIT_COMMIT_MESSAGE_ESC2}"
+  GIT_DIRTY="${GIT_DIRTY}")
 
 target_link_libraries(hyprpicker rt)
 

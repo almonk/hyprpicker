@@ -579,9 +579,57 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 cairo_restore(PCAIRO);
             }
 
-            // (Ring border and shadow moved after clip restore so they are visible)
+            // Draw ring border + shadow now (outside any clip) so labels can render on top
+            {
+                cairo_reset_clip(PCAIRO);
+                cairo_save(PCAIRO);
+                cairo_set_antialias(PCAIRO, CAIRO_ANTIALIAS_DEFAULT);
+                cairo_set_line_join(PCAIRO, CAIRO_LINE_JOIN_ROUND);
+
+                const double ringOuterRad = zoomRadiusUI + RING_OFFSET_UI_PX * onePxUI; // aligns with thin ring offset
+
+                // Shadow: soft halo outside the ring
+                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, RING_SHADOW_ALPHA);
+                cairo_set_line_width(PCAIRO, RING_SHADOW_PX * onePxUI);
+                cairo_new_path(PCAIRO);
+                cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad + 1.0 * onePxUI, 0, 2 * M_PI);
+                cairo_stroke(PCAIRO);
+
+                // White border: crisp 2px stroke around the ring
+                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+                cairo_set_line_width(PCAIRO, RING_BORDER_PX * onePxUI);
+                cairo_new_path(PCAIRO);
+                cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad, 0, 2 * M_PI);
+                cairo_stroke(PCAIRO);
+
+                cairo_restore(PCAIRO);
+            }
 
             if (!m_bDisablePreview) {
+                // Update UI animation dt for stacked labels
+                using namespace std::chrono;
+                const auto nowUI = steady_clock::now();
+                if (!m_uiAnimInitialized) {
+                    m_uiAnimInitialized = true;
+                    m_uiAnimLastTick    = nowUI;
+                }
+                double dtUI = duration<double>(nowUI - m_uiAnimLastTick).count();
+                m_uiAnimLastTick = nowUI;
+                // Decide label stack direction: keep below the circle UI (positive Y), unless too close to bottom
+                const bool nearBottomForDir = (uiCenter.y > (PBUFFER->pixelSize.y - 80));
+                const bool placeAboveDir    = nearBottomForDir; // only go above when near bottom edge
+                const double dirSign        = placeAboveDir ? -1.0 : 1.0; // negative Y is up
+                // Update target offsets every frame so stack follows circle (newest closest to active)
+                const size_t nStack = m_previewStack.size();
+                const double stackStep = LABEL_HEIGHT_UI_PX + LABEL_STACK_MARGIN_UI_PX;
+                for (size_t i = 0; i < nStack; ++i)
+                    m_previewStack[i].offsetTargetUI = dirSign * static_cast<double>(nStack - i) * stackStep;
+                // Animate stacked label offsets towards targets
+                if (dtUI > 0.0) {
+                    const double alpha = std::clamp(dtUI * LABEL_ANIM_SPEED, 0.0, 1.0);
+                    for (auto& item : m_previewStack)
+                        item.offsetCurrentUI += (item.offsetTargetUI - item.offsetCurrentUI) * alpha;
+                }
                 const auto  currentColor = getColorFromPixel(pSurface, centerBuf);
                 std::string previewBuffer;
                 switch (m_bSelectedOutputMode) {
@@ -617,22 +665,57 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 };
                 cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 0.75);
 
-                double x, y, width = 8 + (11 * previewBuffer.length()), height = 28, radius = 6;
+                double x, y;
+                const double height = LABEL_HEIGHT_UI_PX, radius = 6;
+                double width = 8 + (11 * previewBuffer.length());
 
-                if (uiCenter.y > (PBUFFER->pixelSize.y - 50) && uiCenter.x > (PBUFFER->pixelSize.x - 100)) {
-                    x = uiCenter.x - 80;
-                    y = uiCenter.y - 40;
-                } else if (uiCenter.y > (PBUFFER->pixelSize.y - 50)) {
-                    x = uiCenter.x;
-                    y = uiCenter.y - 40;
-                } else if (uiCenter.x > (PBUFFER->pixelSize.x - 100)) {
-                    x = uiCenter.x - 80;
-                    y = uiCenter.y + 20;
+                const bool nearTop    = (uiCenter.y < 60.0);
+                const bool nearRight  = (uiCenter.x > (PBUFFER->pixelSize.x - 100));
+                const bool nearBottom = (uiCenter.y > (PBUFFER->pixelSize.y - 50));
+                const bool placeAbove = nearBottom; // keep below unless too close to bottom
+                if (placeAbove) {
+                    if (nearRight) { x = uiCenter.x - 80; y = uiCenter.y - 40; }
+                    else           { x = uiCenter.x;      y = uiCenter.y - 40; }
                 } else {
-                    x = uiCenter.x;
-                    y = uiCenter.y + 20;
+                    if (nearRight) { x = uiCenter.x - 80; y = uiCenter.y + 20; }
+                    else           { x = uiCenter.x;      y = uiCenter.y + 20; }
                 }
                 x -= 5.5 * previewBuffer.length();
+
+                // Ensure labels are not clipped by the zoom circle
+                cairo_reset_clip(PCAIRO);
+
+                // Draw stacked labels first (duplicates), animating above/below
+                if (!m_previewStack.empty()) {
+                    cairo_select_font_face(PCAIRO, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+                    cairo_set_font_size(PCAIRO, 18);
+                    const double baseYForText = (placeAbove ? uiCenter.y - 20 : uiCenter.y + 40);
+                    for (size_t i = 0; i < m_previewStack.size(); ++i) {
+                        const auto& item = m_previewStack[i];
+                        const double yOff = item.offsetCurrentUI;
+                        const double wI   = 8 + (11 * item.text.length());
+
+                        // Bubble
+                        cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 0.75);
+                        cairo_move_to(PCAIRO, x + radius, y + yOff);
+                        cairo_arc(PCAIRO, x + wI - radius, y + radius + yOff, radius, -M_PI_2, 0);
+                        cairo_arc(PCAIRO, x + wI - radius, y + height - radius + yOff, radius, 0, M_PI_2);
+                        cairo_arc(PCAIRO, x + radius, y + height - radius + yOff, radius, M_PI_2, M_PI);
+                        cairo_arc(PCAIRO, x + radius, y + radius + yOff, radius, M_PI, -M_PI_2);
+                        cairo_close_path(PCAIRO);
+                        cairo_fill(PCAIRO);
+
+                        // Text
+                        cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
+                        const double textXI = x + 5.0;
+                        cairo_move_to(PCAIRO, textXI, baseYForText + yOff);
+                        cairo_show_text(PCAIRO, item.text.c_str());
+                    }
+                }
+
+                // Draw the current top label
+                // Ensure background fill is black (previous text set the source to white)
+                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 0.75);
                 cairo_move_to(PCAIRO, x + radius, y);
                 cairo_arc(PCAIRO, x + width - radius, y + radius, radius, -M_PI_2, 0);
                 cairo_arc(PCAIRO, x + width - radius, y + height - radius, radius, 0, M_PI_2);
@@ -642,6 +725,7 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 cairo_close_path(PCAIRO);
                 cairo_fill(PCAIRO);
 
+                // Now draw the current label text in white
                 cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
                 cairo_select_font_face(PCAIRO, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
                 cairo_set_font_size(PCAIRO, 18);
@@ -649,12 +733,8 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                 double padding = 5.0;
                 double textX   = x + padding;
 
-                if (uiCenter.y > (PBUFFER->pixelSize.y - 50) && uiCenter.x > (PBUFFER->pixelSize.x - 100))
+                if (placeAbove)
                     cairo_move_to(PCAIRO, textX, uiCenter.y - 20);
-                else if (uiCenter.y > (PBUFFER->pixelSize.y - 50))
-                    cairo_move_to(PCAIRO, textX, uiCenter.y - 20);
-                else if (uiCenter.x > (PBUFFER->pixelSize.x - 100))
-                    cairo_move_to(PCAIRO, textX, uiCenter.y + 40);
                 else
                     cairo_move_to(PCAIRO, textX, uiCenter.y + 40);
 
@@ -664,31 +744,6 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             }
             cairo_restore(PCAIRO);
             cairo_pattern_destroy(PATTERN);
-
-            // Add a 2px white border and a subtle shadow around the color ring (outside any clip)
-            {
-                cairo_save(PCAIRO);
-                cairo_set_antialias(PCAIRO, CAIRO_ANTIALIAS_DEFAULT);
-                cairo_set_line_join(PCAIRO, CAIRO_LINE_JOIN_ROUND);
-
-                const double ringOuterRad = zoomRadiusUI + RING_OFFSET_UI_PX * onePxUI; // aligns with thin ring offset
-
-                // Shadow: soft halo outside the ring
-                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, RING_SHADOW_ALPHA);
-                cairo_set_line_width(PCAIRO, RING_SHADOW_PX * onePxUI);
-                cairo_new_path(PCAIRO);
-                cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad + 1.0 * onePxUI, 0, 2 * M_PI);
-                cairo_stroke(PCAIRO);
-
-                // White border: crisp 2px stroke around the ring
-                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
-                cairo_set_line_width(PCAIRO, RING_BORDER_PX * onePxUI);
-                cairo_new_path(PCAIRO);
-                cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, ringOuterRad, 0, 2 * M_PI);
-                cairo_stroke(PCAIRO);
-
-                cairo_restore(PCAIRO);
-            }
 
             // removed custom cursor overlay drawing
         }
@@ -841,10 +896,20 @@ void CHyprpicker::finalizePickAtCurrent(bool forceFinalize) {
             // Accumulate and keep running
             m_multiMode = true;
             m_multiBuffer.push_back(formattedColor);
+            // Push a stacked preview label and set its target offset (most recent nearest to active)
+            m_previewStack.push_back(SLabelStackItem{.text = formattedColor});
+            const size_t n = m_previewStack.size();
+            for (size_t i = 0; i < n; ++i)
+                m_previewStack[i].offsetTargetUI = (n - i) * LABEL_STACK_SPACING_UI_PX;
             return;
         } else if (m_multiMode) {
             // Non-shift click after accumulating: add and finalize
             m_multiBuffer.push_back(formattedColor);
+            // Also add to stack for a final frame (if any)
+            m_previewStack.push_back(SLabelStackItem{.text = formattedColor});
+            const size_t n2 = m_previewStack.size();
+            for (size_t i = 0; i < n2; ++i)
+                m_previewStack[i].offsetTargetUI = (n2 - i) * LABEL_STACK_SPACING_UI_PX;
             std::string joined;
             for (size_t i = 0; i < m_multiBuffer.size(); ++i) {
                 if (i)
@@ -861,6 +926,10 @@ void CHyprpicker::finalizePickAtCurrent(bool forceFinalize) {
     } else if (m_multiMode) {
         // Forced finalize (Enter) while batching: include current and finish
         m_multiBuffer.push_back(formattedColor);
+        m_previewStack.push_back(SLabelStackItem{.text = formattedColor});
+        const size_t n3 = m_previewStack.size();
+        for (size_t i = 0; i < n3; ++i)
+            m_previewStack[i].offsetTargetUI = (n3 - i) * LABEL_STACK_SPACING_UI_PX;
         std::string joined;
         for (size_t i = 0; i < m_multiBuffer.size(); ++i) {
             if (i)
