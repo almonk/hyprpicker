@@ -93,7 +93,11 @@ class CHyprpicker {
 
     // Helpers to consolidate scroll handling
     void                                        handleAltToggle(bool toTriple);
-    void                                        handleRadiusAdjust(double delta);
+    void                                        handleRadiusToggle(bool toDouble);
+
+    // Base radius for discrete toggle (scroll without ALT)
+    double                                      m_zoomRadiusBase = 10.0;
+    bool                                        m_zoomRadiusBaseSet = false;
 
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 

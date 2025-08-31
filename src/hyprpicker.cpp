@@ -740,10 +740,17 @@ void CHyprpicker::handleAltToggle(bool toTriple) {
         m_zoomRadiusTargetSrcPx = std::clamp(m_lockedAperture / m_zoomMagTarget, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
 }
 
-void CHyprpicker::handleRadiusAdjust(double delta) {
-    m_zoomRadiusTargetSrcPx += delta;
-    m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
-    // Not an ALT zoom; ensure we aren't locking during plain radius changes
+void CHyprpicker::handleRadiusToggle(bool toDouble) {
+    if (!m_zoomRadiusBaseSet) {
+        // Use current target as the base so we toggle relative to the user's current setting
+        m_zoomRadiusBase    = m_zoomRadiusTargetSrcPx;
+        m_zoomRadiusBaseSet = true;
+        // Clamp base to allowed range
+        m_zoomRadiusBase = std::clamp(m_zoomRadiusBase, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
+    }
+    const double targetRadius = toDouble ? (m_zoomRadiusBase * 2.0) : m_zoomRadiusBase;
+    m_zoomRadiusTargetSrcPx   = std::clamp(targetRadius, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
+    // Not an ALT zoom; ensure we aren't locking during radius toggles
     m_lockAperture = false;
 }
 
@@ -1049,9 +1056,8 @@ void CHyprpicker::initMouse() {
         if (withAlt) {
             handleAltToggle(steps < 0);
         } else {
-            const double stepRad = withShift ? 6.0 : 3.0;
-            const double delta   = (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
-            handleRadiusAdjust(delta);
+            // Toggle between base radius and 2x base
+            handleRadiusToggle(steps < 0);
         }
         markDirty();
     });
@@ -1070,9 +1076,7 @@ void CHyprpicker::initMouse() {
         if (withAlt) {
             handleAltToggle(steps < 0);
         } else {
-            const double stepRad = withShift ? 6.0 : 3.0;
-            const double delta   = (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
-            handleRadiusAdjust(delta);
+            handleRadiusToggle(steps < 0);
         }
         markDirty();
     });
@@ -1090,9 +1094,7 @@ void CHyprpicker::initMouse() {
         if (withAlt) {
             handleAltToggle(v < 0);
         } else {
-            const double stepRad = withShift ? 1.0 : 0.5; // more responsive smooth scroll
-            const double delta   = (v < 0 ? +stepRad : -stepRad);
-            handleRadiusAdjust(delta);
+            handleRadiusToggle(v < 0);
         }
         markDirty();
     });
