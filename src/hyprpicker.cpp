@@ -836,15 +836,30 @@ void CHyprpicker::finalizePickAtCurrent(bool forceFinalize) {
 
     // Decide multi-pick vs single pick
     const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
-    if (!forceFinalize && (withShift || m_multiMode)) {
-        // Accumulate and continue until a non-shift click or Enter finishes
-        m_multiMode = true;
-        m_multiBuffer.push_back(formattedColor);
-        return;
-    }
-
-    if (m_multiMode) {
-        // Add the final value and produce combined output
+    if (!forceFinalize) {
+        if (withShift) {
+            // Accumulate and keep running
+            m_multiMode = true;
+            m_multiBuffer.push_back(formattedColor);
+            return;
+        } else if (m_multiMode) {
+            // Non-shift click after accumulating: add and finalize
+            m_multiBuffer.push_back(formattedColor);
+            std::string joined;
+            for (size_t i = 0; i < m_multiBuffer.size(); ++i) {
+                if (i)
+                    joined += "\n";
+                joined += m_multiBuffer[i];
+            }
+            if (m_bAutoCopy)
+                NClipboard::copy(joined);
+            else
+                Debug::log(NONE, "%s", joined.c_str());
+            finish();
+            return;
+        }
+    } else if (m_multiMode) {
+        // Forced finalize (Enter) while batching: include current and finish
         m_multiBuffer.push_back(formattedColor);
         std::string joined;
         for (size_t i = 0; i < m_multiBuffer.size(); ++i) {
@@ -856,7 +871,6 @@ void CHyprpicker::finalizePickAtCurrent(bool forceFinalize) {
             NClipboard::copy(joined);
         else
             Debug::log(NONE, "%s", joined.c_str());
-        // Optional: Do not spam notifications when batching
         finish();
         return;
     }
@@ -1158,7 +1172,10 @@ void CHyprpicker::initMouse() {
         markDirty();
     });
     m_pPointer->setButton([this](CCWlPointer* r, uint32_t serial, uint32_t time, uint32_t button, uint32_t button_state) {
-        // Mouse click: Shift-click accumulates, plain click finalizes batch
-        finalizePickAtCurrent(false);
+        // Only act on press to avoid duplicate actions on release
+        if (button_state == WL_POINTER_BUTTON_STATE_PRESSED) {
+            // Mouse click: Shift-click accumulates, plain click finalizes batch
+            finalizePickAtCurrent(false);
+        }
     });
 }
