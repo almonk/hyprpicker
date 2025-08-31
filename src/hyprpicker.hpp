@@ -16,7 +16,7 @@ enum eOutputMode {
 class CHyprpicker {
   public:
     void                                        init();
-    void                                        initCursorTheme();
+    
 
     std::mutex                                  m_mtTickMutex;
 
@@ -63,15 +63,7 @@ class CHyprpicker {
     // Nudge offset for keyboard-controlled fine movement in screen buffer pixels
     Vector2D                                    m_vNudgeBufPx = {0, 0};
 
-    // Pointer cursor visibility control
-    bool                                        m_bCursorHidden = false;
-    uint32_t                                    m_lastPointerSerial = 0;
-
-    // Wayland cursor theme and crosshair image (for drawing while nudging)
-    wl_cursor_theme*                            m_pCursorTheme = nullptr;
-    wl_cursor*                                  m_pThemeCrosshair = nullptr;
-    wl_cursor_image*                            m_pThemeCrosshairImage = nullptr;
-    int                                         m_iCursorThemeSize = 24;
+    
 
     // Keyboard repeat handling
     std::atomic<bool>                           m_keyLeft{false}, m_keyRight{false}, m_keyUp{false}, m_keyDown{false};
@@ -87,6 +79,11 @@ class CHyprpicker {
     double                                      m_zoomRadiusVel = 0.0; // src px / s
     std::chrono::steady_clock::time_point       m_zoomLastTick{};
     bool                                        m_zoomAnimInitialized = false;
+
+    // Zoom magnification (UI pixels per source pixel), animated for smoothness
+    double                                      m_zoomMagTarget = 10.0;   // default 10x
+    double                                      m_zoomMagCurrent = 10.0;
+    double                                      m_zoomMagVel = 0.0;       // ui px per src px per s
 
     void                                        renderSurface(CLayerSurface*, bool forceInactive = false);
 
@@ -106,6 +103,8 @@ class CHyprpicker {
     void                                        finish(int code = 0);
 
     CColor                                      getColorFromPixel(CLayerSurface*, Vector2D);
+
+    void                                        finalizePickAtCurrent();
 
   private:
 };

@@ -27,8 +27,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <wayland-client.h>
-#include <wayland-cursor.h>
 #include <xkbcommon/xkbcommon.h>
+
+// Ensure ALT modifier name is available across platforms
+#ifndef XKB_MOD_NAME_ALT
+#define XKB_MOD_NAME_ALT "Mod1"
+#endif
 
 #include <algorithm>
 #include <filesystem>

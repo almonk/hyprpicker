@@ -103,8 +103,7 @@ void CHyprpicker::init() {
         m_bNoFractional = true;
     }
 
-    // Initialize cursor theme for overlay crosshair drawing (if possible)
-    initCursorTheme();
+    // Use system cursor shape; no custom cursor drawing
 
     for (auto& m : m_vMonitors) {
         m_vLayerSurfaces.emplace_back(std::make_unique<CLayerSurface>(m.get()));
@@ -128,33 +127,7 @@ void CHyprpicker::init() {
     }
 }
 
-void CHyprpicker::initCursorTheme() {
-    if (!m_pSHM)
-        return;
-
-    const char* sizeEnv  = getenv("XCURSOR_SIZE");
-    if (sizeEnv) {
-        int parsed = atoi(sizeEnv);
-        if (parsed > 0)
-            m_iCursorThemeSize = parsed;
-    }
-    const char* themeEnv = getenv("XCURSOR_THEME");
-
-    m_pCursorTheme = wl_cursor_theme_load(themeEnv, m_iCursorThemeSize, (wl_shm*)m_pSHM->resource());
-    if (!m_pCursorTheme) {
-        Debug::log(WARN, "Failed to load cursor theme for overlay reticle");
-        return;
-    }
-
-    m_pThemeCrosshair = wl_cursor_theme_get_cursor(m_pCursorTheme, "crosshair");
-    if (!m_pThemeCrosshair || m_pThemeCrosshair->image_count < 1) {
-        Debug::log(WARN, "Cursor theme does not provide a crosshair cursor");
-        return;
-    }
-
-    // Pick the first image by default
-    m_pThemeCrosshairImage = m_pThemeCrosshair->images[0];
-}
+// (removed) initCursorTheme — no custom cursor drawing
 
 void CHyprpicker::finish(int code) {
     m_vLayerSurfaces.clear();
@@ -198,6 +171,8 @@ void CHyprpicker::recheckACK() {
                 ls->buffers[0] = makeShared<SPoolBuffer>(MONITORSIZE, WL_SHM_FORMAT_ARGB8888, MONITORSIZE.x * 4);
                 ls->buffers[1] = makeShared<SPoolBuffer>(MONITORSIZE, WL_SHM_FORMAT_ARGB8888, MONITORSIZE.x * 4);
             }
+
+            
         }
     }
 
@@ -451,7 +426,7 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
 
             cairo_scale(PCAIRO, 1, 1);
 
-            // Update spring animation for zoom radius
+            // Update spring animations for zoom radius and magnification
             {
                 using namespace std::chrono;
                 const auto now = steady_clock::now();
@@ -460,28 +435,44 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
                     m_zoomLastTick        = now;
                     m_zoomRadiusCurrentSrcPx = m_zoomRadiusTargetSrcPx;
                     m_zoomRadiusVel          = 0.0;
+                    m_zoomMagCurrent         = m_zoomMagTarget;
+                    m_zoomMagVel             = 0.0;
                 }
                 const double dt = duration<double>(now - m_zoomLastTick).count();
                 m_zoomLastTick  = now;
                 if (dt > 0.0) {
                     // Snappier critically-damped spring
-                    const double k = 600.0; // stiffness (higher = snappier)
+                    const double k = 1000.0; // stiffness (higher = snappier)
                     const double zeta = 1.0; // damping ratio (critical)
                     const double c = 2.0 * std::sqrt(k) * zeta;
-                    const double x = m_zoomRadiusCurrentSrcPx - m_zoomRadiusTargetSrcPx;
-                    const double a = (-k * x) - (c * m_zoomRadiusVel);
-                    m_zoomRadiusVel += a * dt;
-                    m_zoomRadiusCurrentSrcPx += m_zoomRadiusVel * dt;
-                    // Snap when very close to avoid jitter
-                    if (std::abs(m_zoomRadiusCurrentSrcPx - m_zoomRadiusTargetSrcPx) < 0.01 && std::abs(m_zoomRadiusVel) < 0.01) {
-                        m_zoomRadiusCurrentSrcPx = m_zoomRadiusTargetSrcPx;
-                        m_zoomRadiusVel          = 0.0;
+                    // Radius
+                    {
+                        const double x = m_zoomRadiusCurrentSrcPx - m_zoomRadiusTargetSrcPx;
+                        const double a = (-k * x) - (c * m_zoomRadiusVel);
+                        m_zoomRadiusVel += a * dt;
+                        m_zoomRadiusCurrentSrcPx += m_zoomRadiusVel * dt;
+                        // Snap when very close to avoid jitter
+                        if (std::abs(m_zoomRadiusCurrentSrcPx - m_zoomRadiusTargetSrcPx) < 0.01 && std::abs(m_zoomRadiusVel) < 0.01) {
+                            m_zoomRadiusCurrentSrcPx = m_zoomRadiusTargetSrcPx;
+                            m_zoomRadiusVel          = 0.0;
+                        }
+                    }
+                    // Magnification
+                    {
+                        const double xM = m_zoomMagCurrent - m_zoomMagTarget;
+                        const double aM = (-k * xM) - (c * m_zoomMagVel);
+                        m_zoomMagVel += aM * dt;
+                        m_zoomMagCurrent += m_zoomMagVel * dt;
+                        if (std::abs(m_zoomMagCurrent - m_zoomMagTarget) < 0.01 && std::abs(m_zoomMagVel) < 0.01) {
+                            m_zoomMagCurrent = m_zoomMagTarget;
+                            m_zoomMagVel     = 0.0;
+                        }
                     }
                 }
             }
 
             // Keep the zoom circle centered at the (possibly nudged) UI center
-            const double cellWForRadius = 10.0 / SCALEBUFS.x;
+            const double cellWForRadius = m_zoomMagCurrent / SCALEBUFS.x;
             const double zoomRadiusUI   = m_zoomRadiusCurrentSrcPx * cellWForRadius;
             const double outerRadiusUI  = zoomRadiusUI + 5.0 / SCALEBUFS.x; // thin border ring
             cairo_arc(PCAIRO, uiCenter.x, uiCenter.y, outerRadiusUI, 0, 2 * M_PI);
@@ -500,7 +491,8 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             cairo_matrix_t matrix;
             cairo_matrix_init_identity(&matrix);
             cairo_matrix_translate(&matrix, centerBuf.x + 0.5f, centerBuf.y + 0.5f);
-            cairo_matrix_scale(&matrix, 0.1f, 0.1f);
+            const double invMag = 1.0 / std::max(0.01, m_zoomMagCurrent);
+            cairo_matrix_scale(&matrix, invMag, invMag);
             cairo_matrix_translate(&matrix, (-centerBuf.x / SCALEBUFS.x) - 0.5f, (-centerBuf.y / SCALEBUFS.y) - 0.5f);
             cairo_pattern_set_matrix(PATTERN, &matrix);
             cairo_set_source(PCAIRO, PATTERN);
@@ -511,10 +503,10 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             cairo_paint(PCAIRO);
 
             // Draw a faint pixel grid overlay aligned to the source pixels
-            // One source pixel maps to 10x in the zoom (scale 0.1 above)
+            // One source pixel maps to m_zoomMagCurrent in the zoom (scale 1/mag above)
             {
-                const double cellW = 10.0 / SCALEBUFS.x;
-                const double cellH = 10.0 / SCALEBUFS.y;
+                const double cellW = m_zoomMagCurrent / SCALEBUFS.x;
+                const double cellH = m_zoomMagCurrent / SCALEBUFS.y;
 
                 // Vertical grid lines at pixel boundaries (x = k + 0.5 in source space)
                 const double minVXSrc = centerBuf.x - (zoomRadius / cellW);
@@ -635,34 +627,7 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
             cairo_restore(PCAIRO);
             cairo_pattern_destroy(PATTERN);
 
-            // If the system cursor is hidden due to keyboard nudging,
-            // draw a visible crosshair matching the system style (unclipped)
-            if (m_bCursorHidden) {
-                const auto SCALEBUFS_INV2 = Vector2D{1.0 / SCALEBUFS.x, 1.0 / SCALEBUFS.y};
-                Vector2D    uiCenter2     = CLICKPOS + (m_vNudgeBufPx * SCALEBUFS_INV2);
-                uiCenter2.x               = std::clamp(uiCenter2.x, 0.0, PBUFFER->pixelSize.x - 1.0);
-                uiCenter2.y               = std::clamp(uiCenter2.y, 0.0, PBUFFER->pixelSize.y - 1.0);
-
-                {
-                    const double halfLen = 8.0 / SCALEBUFS.x;
-                    // Outline for contrast (black)
-                    cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
-                    cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
-                    cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-                    cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-                    cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-                    cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-                    cairo_stroke(PCAIRO);
-                    // Inner lines (white)
-                    cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
-                    cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
-                    cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-                    cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-                    cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-                    cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-                    cairo_stroke(PCAIRO);
-                }
-            }
+            // removed custom cursor overlay drawing
         }
     } else if (!m_bRenderInactive && m_bCoordsInitialized) {
         cairo_set_operator(PCAIRO, CAIRO_OPERATOR_SOURCE);
@@ -683,34 +648,7 @@ void CHyprpicker::renderSurface(CLayerSurface* pSurface, bool forceInactive) {
         cairo_surface_flush(PBUFFER->surface);
         cairo_pattern_destroy(PATTERNPRE);
 
-        // No zoom mode: if cursor hidden during keyboard nudging, draw crosshair at UI center
-        if (m_bCursorHidden) {
-            const auto SCALEBUFS_INV = Vector2D{1.0 / SCALEBUFS.x, 1.0 / SCALEBUFS.y};
-            const auto MOUSECOORDSABS2 = m_vLastCoords.floor() / pSurface->m_pMonitor->size;
-            const auto CLICKPOS2       = MOUSECOORDSABS2 * PBUFFER->pixelSize;
-            Vector2D    uiCenter2      = CLICKPOS2 + (m_vNudgeBufPx * SCALEBUFS_INV);
-            uiCenter2.x                = std::clamp(uiCenter2.x, 0.0, PBUFFER->pixelSize.x - 1.0);
-            uiCenter2.y                = std::clamp(uiCenter2.y, 0.0, PBUFFER->pixelSize.y - 1.0);
-            {
-                const double halfLen = 8.0 / SCALEBUFS.x;
-                // Outline for contrast (black)
-                cairo_set_source_rgba(PCAIRO, 0.0, 0.0, 0.0, 1.0);
-                cairo_set_line_width(PCAIRO, 2.0 / SCALEBUFS.x);
-                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-                cairo_stroke(PCAIRO);
-                // Inner lines (white)
-                cairo_set_source_rgba(PCAIRO, 1.0, 1.0, 1.0, 1.0);
-                cairo_set_line_width(PCAIRO, 1.0 / SCALEBUFS.x);
-                cairo_move_to(PCAIRO, uiCenter2.x - halfLen, uiCenter2.y);
-                cairo_line_to(PCAIRO, uiCenter2.x + halfLen, uiCenter2.y);
-                cairo_move_to(PCAIRO, uiCenter2.x, uiCenter2.y - halfLen);
-                cairo_line_to(PCAIRO, uiCenter2.x, uiCenter2.y + halfLen);
-                cairo_stroke(PCAIRO);
-            }
-        }
+        // removed custom cursor overlay drawing
     }
 
     pSurface->sendFrame();
@@ -740,6 +678,119 @@ CColor CHyprpicker::getColorFromPixel(CLayerSurface* pLS, Vector2D pix) {
     }* px = (struct SPixel*)((char*)dataSrc + ((ptrdiff_t)pix.y * (int)pLS->screenBuffer->pixelSize.x * 4) + ((ptrdiff_t)pix.x * 4));
 
     return CColor{.r = px->red, .g = px->green, .b = px->blue, .a = px->alpha};
+}
+
+void CHyprpicker::finalizePickAtCurrent() {
+    if (!m_pLastSurface)
+        return;
+    // relative brightness of a color
+    const auto FLUMI = [](const float& c) -> float { return c <= 0.03928 ? c / 12.92 : powf((c + 0.055) / 1.055, 2.4); };
+
+    // get the px and print it (apply keyboard nudge in screen buffer pixels)
+    const auto MOUSECOORDSABS = m_vLastCoords.floor() / m_pLastSurface->m_pMonitor->size;
+    Vector2D   CLICKPOS       = MOUSECOORDSABS * m_pLastSurface->screenBuffer->pixelSize;
+    CLICKPOS += m_vNudgeBufPx;
+    CLICKPOS.x = std::clamp(CLICKPOS.x, 0.0, m_pLastSurface->screenBuffer->pixelSize.x - 1.0);
+    CLICKPOS.y = std::clamp(CLICKPOS.y, 0.0, m_pLastSurface->screenBuffer->pixelSize.y - 1.0);
+
+    const auto COL = getColorFromPixel(m_pLastSurface, CLICKPOS);
+
+    const uint8_t FG = 0.2126 * FLUMI(COL.r / 255.0f) + 0.7152 * FLUMI(COL.g / 255.0f) + 0.0722 * FLUMI(COL.b / 255.0f) > 0.17913 ? 0 : 255;
+
+    auto          toHex = [this](int i) -> std::string {
+        const char* DS = m_bUseLowerCase ? "0123456789abcdef" : "0123456789ABCDEF";
+
+        std::string result = "";
+
+        result += DS[i / 16];
+        result += DS[i % 16];
+
+        return result;
+    };
+
+    std::string hexColor = std::format("#{0:02x}{1:02x}{2:02x}", COL.r, COL.g, COL.b);
+
+    switch (m_bSelectedOutputMode) {
+        case OUTPUT_CMYK: {
+            float c, m, y, k;
+            COL.getCMYK(c, m, y, k);
+
+            std::string formattedColor = std::format("{}% {}% {}% {}%", c, m, y, k);
+
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g%% %g%% %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, c, m, y, k);
+            else
+                Debug::log(NONE, "%g%% %g%% %g%% %g%%", c, m, y, k);
+
+            if (m_bAutoCopy)
+                NClipboard::copy(formattedColor);
+
+            if (m_bNotify)
+                NNotify::send(hexColor, formattedColor);
+
+            finish();
+            break;
+        }
+        case OUTPUT_HEX: {
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im#%s%s%s\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, toHex(COL.r).c_str(), toHex(COL.g).c_str(),
+                           toHex(COL.b).c_str());
+            else
+                Debug::log(NONE, "#%s%s%s", toHex(COL.r).c_str(), toHex(COL.g).c_str(), toHex(COL.b).c_str());
+
+            if (m_bAutoCopy)
+                NClipboard::copy(hexColor);
+
+            if (m_bNotify)
+                NNotify::send(hexColor, hexColor);
+
+            finish();
+            break;
+        }
+        case OUTPUT_RGB: {
+            std::string formattedColor = std::format("{} {} {}", COL.r, COL.g, COL.b);
+
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%i %i %i\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, COL.r, COL.g, COL.b);
+            else
+                Debug::log(NONE, "%i %i %i", COL.r, COL.g, COL.b);
+
+            if (m_bAutoCopy)
+                NClipboard::copy(formattedColor);
+
+            if (m_bNotify)
+                NNotify::send(hexColor, formattedColor);
+
+            finish();
+            break;
+        }
+        case OUTPUT_HSL:
+        case OUTPUT_HSV: {
+            float h, s, l_or_v;
+            if (m_bSelectedOutputMode == OUTPUT_HSV)
+                COL.getHSV(h, s, l_or_v);
+            else
+                COL.getHSL(h, s, l_or_v);
+
+            std::string formattedColor = std::format("{} {}% {}%", h, s, l_or_v);
+
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, h, s, l_or_v);
+            else
+                Debug::log(NONE, "%g %g%% %g%%", h, s, l_or_v);
+
+            if (m_bAutoCopy)
+                NClipboard::copy(formattedColor);
+
+            if (m_bNotify)
+                NNotify::send(hexColor, formattedColor);
+
+            finish();
+            break;
+        }
+    }
+
+    finish();
 }
 
 void CHyprpicker::startRepeatThread() {
@@ -847,6 +898,10 @@ void CHyprpicker::initKeyboard() {
                     finish(2);
                     return;
                 }
+                if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
+                    finalizePickAtCurrent();
+                    return;
+                }
                 if (!m_bNoZoom && m_bCoordsInitialized && m_pLastSurface) {
                     const double step = xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) ? 8.0 : 1.0;
                     bool         nudged = false;
@@ -856,14 +911,8 @@ void CHyprpicker::initKeyboard() {
                         case XKB_KEY_Up: m_vNudgeBufPx.y -= step; m_keyUp = true; nudged = true; break;
                         case XKB_KEY_Down: m_vNudgeBufPx.y += step; m_keyDown = true; nudged = true; break;
                     }
-                    if (nudged) {
-                        // Hide the system cursor while nudging with keyboard
-                        if (!m_bCursorHidden && m_pPointer && m_lastPointerSerial && m_pCursorShapeDevice) {
-                            m_pPointer->sendSetCursor(m_lastPointerSerial, nullptr, 0, 0);
-                            m_bCursorHidden = true;
-                        }
+                    if (nudged)
                         markDirty();
-                    }
                 }
             } else if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
                 switch (sym) {
@@ -886,7 +935,6 @@ void CHyprpicker::initMouse() {
         m_vLastCoords        = {x, y};
         m_bCoordsInitialized = true;
         m_vNudgeBufPx        = {0, 0};
-        m_lastPointerSerial  = serial;
 
         for (auto& ls : m_vLayerSurfaces) {
             if (ls->pSurface->resource() == surface) {
@@ -900,7 +948,7 @@ void CHyprpicker::initMouse() {
 
         markDirty();
     });
-    // Adjust zoom radius with scroll
+    // Adjust zoom radius or magnification with scroll (Alt modifies magnification)
     m_pPointer->setAxisDiscrete([this](CCWlPointer* r, enum wl_pointer_axis axis, int32_t discrete) {
         if (m_bNoZoom || !m_bCoordsInitialized)
             return;
@@ -909,11 +957,22 @@ void CHyprpicker::initMouse() {
         int steps = discrete; // wlroots: up is negative, down is positive
         if (steps == 0)
             return;
-        // Shift for larger steps
+        // Modifiers
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
-        const double stepSize = withShift ? 2.0 : 1.0;
-        m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
-        m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+        const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
+        if (withAlt) {
+            const double stepMag = withShift ? 2.0 : 1.0;
+            m_zoomMagTarget += (steps < 0 ? +stepMag * std::abs(steps) : -stepMag * std::abs(steps));
+            m_zoomMagTarget = std::clamp(m_zoomMagTarget, 2.0, 60.0);
+            // Keep circle aperture constant in UI by adjusting radius inversely
+            const double aperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            if (m_zoomMagTarget > 0.01)
+                m_zoomRadiusTargetSrcPx = std::clamp(aperture / m_zoomMagTarget, 4.0, 60.0);
+        } else {
+            const double stepRad = withShift ? 6.0 : 3.0;
+            m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
+            m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+        }
         markDirty();
     });
     m_pPointer->setAxisValue120([this](CCWlPointer* r, enum wl_pointer_axis axis, int32_t value120) {
@@ -927,9 +986,19 @@ void CHyprpicker::initMouse() {
         if (steps == 0)
             steps = (value120 > 0 ? 1 : -1);
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
-        const double stepSize = withShift ? 2.0 : 1.0;
-        m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepSize * std::abs(steps) : -stepSize * std::abs(steps));
-        m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+        const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
+        if (withAlt) {
+            const double stepMag = withShift ? 2.0 : 1.0;
+            m_zoomMagTarget += (steps < 0 ? +stepMag * std::abs(steps) : -stepMag * std::abs(steps));
+            m_zoomMagTarget = std::clamp(m_zoomMagTarget, 2.0, 60.0);
+            const double aperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            if (m_zoomMagTarget > 0.01)
+                m_zoomRadiusTargetSrcPx = std::clamp(aperture / m_zoomMagTarget, 4.0, 60.0);
+        } else {
+            const double stepRad = withShift ? 6.0 : 3.0;
+            m_zoomRadiusTargetSrcPx += (steps < 0 ? +stepRad * std::abs(steps) : -stepRad * std::abs(steps));
+            m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+        }
         markDirty();
     });
     // Fallback for smooth axis if discrete not provided
@@ -942,9 +1011,19 @@ void CHyprpicker::initMouse() {
         if (std::abs(v) < 0.01)
             return;
         const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
-        const double stepSize = withShift ? 0.5 : 0.25; // gentle increments for smooth scroll
-        m_zoomRadiusTargetSrcPx += (v < 0 ? +stepSize : -stepSize);
-        m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+        const bool withAlt   = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE));
+        if (withAlt) {
+            const double stepMag = withShift ? 0.5 : 0.25; // smooth scroll finer control
+            m_zoomMagTarget += (v < 0 ? +stepMag : -stepMag);
+            m_zoomMagTarget = std::clamp(m_zoomMagTarget, 2.0, 60.0);
+            const double aperture = m_zoomRadiusCurrentSrcPx * m_zoomMagCurrent;
+            if (m_zoomMagTarget > 0.01)
+                m_zoomRadiusTargetSrcPx = std::clamp(aperture / m_zoomMagTarget, 4.0, 60.0);
+        } else {
+            const double stepRad = withShift ? 1.0 : 0.5; // more responsive smooth scroll
+            m_zoomRadiusTargetSrcPx += (v < 0 ? +stepRad : -stepRad);
+            m_zoomRadiusTargetSrcPx = std::clamp(m_zoomRadiusTargetSrcPx, 4.0, 60.0);
+        }
         markDirty();
     });
     m_pPointer->setLeave([this](CCWlPointer* r, uint32_t timeMs, wl_proxy* surface) {
@@ -966,125 +1045,9 @@ void CHyprpicker::initMouse() {
         // reset nudge on mouse movement
         m_vNudgeBufPx = {0, 0};
 
-        // Show the system cursor again if it was hidden during keyboard nudging
-        if (m_bCursorHidden && m_pCursorShapeDevice && m_lastPointerSerial) {
-            m_pCursorShapeDevice->sendSetShape(m_lastPointerSerial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR);
-            m_bCursorHidden = false;
-        }
-
         markDirty();
     });
     m_pPointer->setButton([this](CCWlPointer* r, uint32_t serial, uint32_t time, uint32_t button, uint32_t button_state) {
-        // relative brightness of a color
-        // https://www.w3.org/TR/2008/REC-WCAG20-20081211/#relativeluminancedef
-        const auto FLUMI = [](const float& c) -> float { return c <= 0.03928 ? c / 12.92 : powf((c + 0.055) / 1.055, 2.4); };
-
-        // get the px and print it (apply keyboard nudge in screen buffer pixels)
-        const auto MOUSECOORDSABS = m_vLastCoords.floor() / m_pLastSurface->m_pMonitor->size;
-        Vector2D   CLICKPOS       = MOUSECOORDSABS * m_pLastSurface->screenBuffer->pixelSize;
-        CLICKPOS += m_vNudgeBufPx;
-        CLICKPOS.x = std::clamp(CLICKPOS.x, 0.0, m_pLastSurface->screenBuffer->pixelSize.x - 1.0);
-        CLICKPOS.y = std::clamp(CLICKPOS.y, 0.0, m_pLastSurface->screenBuffer->pixelSize.y - 1.0);
-
-        const auto COL = getColorFromPixel(m_pLastSurface, CLICKPOS);
-
-        // threshold: (lumi_white + 0.05) / (x + 0.05) == (x + 0.05) / (lumi_black + 0.05)
-        // https://www.w3.org/TR/2008/REC-WCAG20-20081211/#contrast-ratiodef
-        const uint8_t FG = 0.2126 * FLUMI(COL.r / 255.0f) + 0.7152 * FLUMI(COL.g / 255.0f) + 0.0722 * FLUMI(COL.b / 255.0f) > 0.17913 ? 0 : 255;
-
-        auto          toHex = [this](int i) -> std::string {
-            const char* DS = m_bUseLowerCase ? "0123456789abcdef" : "0123456789ABCDEF";
-
-            std::string result = "";
-
-            result += DS[i / 16];
-            result += DS[i % 16];
-
-            return result;
-        };
-
-        std::string hexColor = std::format("#{0:02x}{1:02x}{2:02x}", COL.r, COL.g, COL.b);
-
-        switch (m_bSelectedOutputMode) {
-            case OUTPUT_CMYK: {
-                float c, m, y, k;
-                COL.getCMYK(c, m, y, k);
-
-                std::string formattedColor = std::format("{}% {}% {}% {}%", c, m, y, k);
-
-                if (m_bFancyOutput)
-                    Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g%% %g%% %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, c, m, y, k);
-                else
-                    Debug::log(NONE, "%g%% %g%% %g%% %g%%", c, m, y, k);
-
-                if (m_bAutoCopy)
-                    NClipboard::copy(formattedColor);
-
-                if (m_bNotify)
-                    NNotify::send(hexColor, formattedColor);
-
-                finish();
-                break;
-            }
-            case OUTPUT_HEX: {
-                if (m_bFancyOutput)
-                    Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im#%s%s%s\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, toHex(COL.r).c_str(), toHex(COL.g).c_str(),
-                               toHex(COL.b).c_str());
-                else
-                    Debug::log(NONE, "#%s%s%s", toHex(COL.r).c_str(), toHex(COL.g).c_str(), toHex(COL.b).c_str());
-
-                if (m_bAutoCopy)
-                    NClipboard::copy(hexColor);
-
-                if (m_bNotify)
-                    NNotify::send(hexColor, hexColor);
-
-                finish();
-                break;
-            }
-            case OUTPUT_RGB: {
-                std::string formattedColor = std::format("{} {} {}", COL.r, COL.g, COL.b);
-
-                if (m_bFancyOutput)
-                    Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%i %i %i\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, COL.r, COL.g, COL.b);
-                else
-                    Debug::log(NONE, "%i %i %i", COL.r, COL.g, COL.b);
-
-                if (m_bAutoCopy)
-                    NClipboard::copy(formattedColor);
-
-                if (m_bNotify)
-                    NNotify::send(hexColor, formattedColor);
-
-                finish();
-                break;
-            }
-            case OUTPUT_HSL:
-            case OUTPUT_HSV: {
-                float h, s, l_or_v;
-                if (m_bSelectedOutputMode == OUTPUT_HSV)
-                    COL.getHSV(h, s, l_or_v);
-                else
-                    COL.getHSL(h, s, l_or_v);
-
-                std::string formattedColor = std::format("{} {}% {}%", h, s, l_or_v);
-
-                if (m_bFancyOutput)
-                    Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, h, s, l_or_v);
-                else
-                    Debug::log(NONE, "%g %g%% %g%%", h, s, l_or_v);
-
-                if (m_bAutoCopy)
-                    NClipboard::copy(formattedColor);
-
-                if (m_bNotify)
-                    NNotify::send(hexColor, formattedColor);
-
-                finish();
-                break;
-            }
-        }
-
-        finish();
+        finalizePickAtCurrent();
     });
 }
