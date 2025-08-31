@@ -773,7 +773,7 @@ CColor CHyprpicker::getColorFromPixel(CLayerSurface* pLS, Vector2D pix) {
     return CColor{.r = px->red, .g = px->green, .b = px->blue, .a = px->alpha};
 }
 
-void CHyprpicker::finalizePickAtCurrent() {
+void CHyprpicker::finalizePickAtCurrent(bool forceFinalize) {
     if (!m_pLastSurface)
         return;
     // relative brightness of a color
@@ -803,58 +803,22 @@ void CHyprpicker::finalizePickAtCurrent() {
 
     std::string hexColor = std::format("#{0:02x}{1:02x}{2:02x}", COL.r, COL.g, COL.b);
 
+    // Prepare outputs
+    std::string formattedColor;
     switch (m_bSelectedOutputMode) {
         case OUTPUT_CMYK: {
             float c, m, y, k;
             COL.getCMYK(c, m, y, k);
 
-            std::string formattedColor = std::format("{}% {}% {}% {}%", c, m, y, k);
-
-            if (m_bFancyOutput)
-                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g%% %g%% %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, c, m, y, k);
-            else
-                Debug::log(NONE, "%g%% %g%% %g%% %g%%", c, m, y, k);
-
-            if (m_bAutoCopy)
-                NClipboard::copy(formattedColor);
-
-            if (m_bNotify)
-                NNotify::send(hexColor, formattedColor);
-
-            finish();
-            break;
+            formattedColor = std::format("{}% {}% {}% {}%", c, m, y, k);
+            break; 
         }
         case OUTPUT_HEX: {
-            if (m_bFancyOutput)
-                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im#%s%s%s\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, toHex(COL.r).c_str(), toHex(COL.g).c_str(),
-                           toHex(COL.b).c_str());
-            else
-                Debug::log(NONE, "#%s%s%s", toHex(COL.r).c_str(), toHex(COL.g).c_str(), toHex(COL.b).c_str());
-
-            if (m_bAutoCopy)
-                NClipboard::copy(hexColor);
-
-            if (m_bNotify)
-                NNotify::send(hexColor, hexColor);
-
-            finish();
+            formattedColor = hexColor;
             break;
         }
         case OUTPUT_RGB: {
-            std::string formattedColor = std::format("{} {} {}", COL.r, COL.g, COL.b);
-
-            if (m_bFancyOutput)
-                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%i %i %i\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, COL.r, COL.g, COL.b);
-            else
-                Debug::log(NONE, "%i %i %i", COL.r, COL.g, COL.b);
-
-            if (m_bAutoCopy)
-                NClipboard::copy(formattedColor);
-
-            if (m_bNotify)
-                NNotify::send(hexColor, formattedColor);
-
-            finish();
+            formattedColor = std::format("{} {} {}", COL.r, COL.g, COL.b);
             break;
         }
         case OUTPUT_HSL:
@@ -865,25 +829,97 @@ void CHyprpicker::finalizePickAtCurrent() {
             else
                 COL.getHSL(h, s, l_or_v);
 
-            std::string formattedColor = std::format("{} {}% {}%", h, s, l_or_v);
-
-            if (m_bFancyOutput)
-                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, h, s, l_or_v);
-            else
-                Debug::log(NONE, "%g %g%% %g%%", h, s, l_or_v);
-
-            if (m_bAutoCopy)
-                NClipboard::copy(formattedColor);
-
-            if (m_bNotify)
-                NNotify::send(hexColor, formattedColor);
-
-            finish();
+            formattedColor = std::format("{} {}% {}%", h, s, l_or_v);
             break;
         }
     }
 
-    finish();
+    // Decide multi-pick vs single pick
+    const bool withShift = (m_pXKBState && xkb_state_mod_name_is_active(m_pXKBState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE));
+    if (!forceFinalize && (withShift || m_multiMode)) {
+        // Accumulate and continue until a non-shift click or Enter finishes
+        m_multiMode = true;
+        m_multiBuffer.push_back(formattedColor);
+        return;
+    }
+
+    if (m_multiMode) {
+        // Add the final value and produce combined output
+        m_multiBuffer.push_back(formattedColor);
+        std::string joined;
+        for (size_t i = 0; i < m_multiBuffer.size(); ++i) {
+            if (i)
+                joined += "\n";
+            joined += m_multiBuffer[i];
+        }
+        if (m_bAutoCopy)
+            NClipboard::copy(joined);
+        else
+            Debug::log(NONE, "%s", joined.c_str());
+        // Optional: Do not spam notifications when batching
+        finish();
+        return;
+    }
+
+    // Single pick legacy behavior
+    switch (m_bSelectedOutputMode) {
+        case OUTPUT_CMYK: {
+            float c, m, y, k;
+            COL.getCMYK(c, m, y, k);
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g%% %g%% %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, c, m, y, k);
+            else
+                Debug::log(NONE, "%g%% %g%% %g%% %g%%", c, m, y, k);
+            if (m_bAutoCopy)
+                NClipboard::copy(formattedColor);
+            if (m_bNotify)
+                NNotify::send(hexColor, formattedColor);
+            finish();
+            break;
+        }
+        case OUTPUT_HEX: {
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im#%s%s%s\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, toHex(COL.r).c_str(), toHex(COL.g).c_str(), toHex(COL.b).c_str());
+            else
+                Debug::log(NONE, "#%s%s%s", toHex(COL.r).c_str(), toHex(COL.g).c_str(), toHex(COL.b).c_str());
+            if (m_bAutoCopy)
+                NClipboard::copy(formattedColor);
+            if (m_bNotify)
+                NNotify::send(hexColor, hexColor);
+            finish();
+            break;
+        }
+        case OUTPUT_RGB: {
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%i %i %i\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, COL.r, COL.g, COL.b);
+            else
+                Debug::log(NONE, "%i %i %i", COL.r, COL.g, COL.b);
+            if (m_bAutoCopy)
+                NClipboard::copy(formattedColor);
+            if (m_bNotify)
+                NNotify::send(hexColor, formattedColor);
+            finish();
+            break;
+        }
+        case OUTPUT_HSL:
+        case OUTPUT_HSV: {
+            float h, s, l_or_v;
+            if (m_bSelectedOutputMode == OUTPUT_HSV)
+                COL.getHSV(h, s, l_or_v);
+            else
+                COL.getHSL(h, s, l_or_v);
+            if (m_bFancyOutput)
+                Debug::log(NONE, "\033[38;2;%i;%i;%i;48;2;%i;%i;%im%g %g%% %g%%\033[0m", FG, FG, FG, COL.r, COL.g, COL.b, h, s, l_or_v);
+            else
+                Debug::log(NONE, "%g %g%% %g%%", h, s, l_or_v);
+            if (m_bAutoCopy)
+                NClipboard::copy(formattedColor);
+            if (m_bNotify)
+                NNotify::send(hexColor, formattedColor);
+            finish();
+            break;
+        }
+    }
 }
 
 void CHyprpicker::startRepeatThread() {
@@ -992,7 +1028,8 @@ void CHyprpicker::initKeyboard() {
                     return;
                 }
                 if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
-                    finalizePickAtCurrent();
+                    // Enter finalizes the selection; include current under cursor
+                    finalizePickAtCurrent(true);
                     return;
                 }
                 if (!m_bNoZoom && m_bCoordsInitialized && m_pLastSurface) {
@@ -1121,6 +1158,7 @@ void CHyprpicker::initMouse() {
         markDirty();
     });
     m_pPointer->setButton([this](CCWlPointer* r, uint32_t serial, uint32_t time, uint32_t button, uint32_t button_state) {
-        finalizePickAtCurrent();
+        // Mouse click: Shift-click accumulates, plain click finalizes batch
+        finalizePickAtCurrent(false);
     });
 }

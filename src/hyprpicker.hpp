@@ -115,10 +115,13 @@ class CHyprpicker {
     void                                        markDirty();
 
     void                                        finish(int code = 0);
+    void                                        finalizePickAtCurrent(bool forceFinalize);
 
     CColor                                      getColorFromPixel(CLayerSurface*, Vector2D);
 
-    void                                        finalizePickAtCurrent();
+    // Multi-pick accumulation (Shift-click)
+    std::vector<std::string>                    m_multiBuffer;
+    bool                                        m_multiMode = false;
 
   private:
 };
